@@ -451,34 +451,54 @@ def apply_offer_ratings(offers, api_key):
 # ---------------------------------------------------------------------------
 # Discord Webhook
 # ---------------------------------------------------------------------------
-def build_summary_embed(offers):
-    """Baut EIN Embed mit einer Tabelle aller Angebote (Stufe/Preis/Quelle/Titel)
-    plus einer nummerierten Link-Liste darunter."""
-    rows = ["#   Stufe          Preis      Quelle            Titel"]
-    rows.append("-" * 70)
-    links = []
+# Discord-Grenzen: max. 25 Felder pro Embed, max. 10 Embeds pro Nachricht.
+MAX_FIELDS_PER_EMBED = 25
+MAX_EMBEDS_PER_MESSAGE = 10
 
-    for i, offer in enumerate(offers, start=1):
-        tier = offer.get("tier", "Unbewertet")
-        emoji = TIER_EMOJI.get(tier, "⚪")
-        title_short = offer["title"] if len(offer["title"]) <= 38 else offer["title"][:37] + "…"
-        rows.append(
-            f"{i:<3} {emoji} {tier:<11} {offer['price']:>8.2f}€  {offer['source']:<16}  {title_short}"
-        )
-        links.append(f"**[{i}]** [{offer['source']} – {offer['price']:.2f} €]({offer['link']})")
-
-    table = "\n".join(rows)
-    description = f"```\n{table}\n```\n" + "\n".join(links)
-
-    has_top_deal = any(offer.get("tier") in ("Top-Deal", "Schnaeppchen") for offer in offers)
-
-    embed = {
-        "title": f"MacBook Pro 14 M2 Pro — {len(offers)} Angebote gefunden",
-        "description": description[:4096],
-        "color": COLOR_GREEN if has_top_deal else COLOR_ORANGE,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+def _offer_field(index, offer):
+    tier = offer.get("tier", "Unbewertet")
+    emoji = TIER_EMOJI.get(tier, "⚪")
+    title_short = offer["title"] if len(offer["title"]) <= 70 else offer["title"][:69] + "…"
+    return {
+        "name": f"{emoji}  {offer['price']:.2f} €  ·  {offer['source']}  ·  {tier}",
+        "value": f"[{title_short}]({offer['link']})",
+        "inline": False,
     }
-    return embed, has_top_deal
+
+def build_summary_embeds(offers):
+    """Baut ein oder mehrere Discord-Embeds mit je bis zu 25 sauber
+    formatierten, anklickbaren Angeboten (statt einer Textwand). Das erste
+    Embed bekommt Titel, Farbe und ein Vorschaubild des besten Angebots."""
+    has_top_deal = any(offer.get("tier") in ("Top-Deal", "Schnaeppchen") for offer in offers)
+    color = COLOR_GREEN if has_top_deal else COLOR_ORANGE
+    now = datetime.now(timezone.utc).isoformat()
+
+    max_offers = MAX_FIELDS_PER_EMBED * MAX_EMBEDS_PER_MESSAGE
+    shown_offers = offers[:max_offers]
+    if len(offers) > max_offers:
+        print(f"HINWEIS: {len(offers) - max_offers} weitere Angebote werden aus Platzgruenden nicht angezeigt.")
+
+    chunks = [
+        shown_offers[i:i + MAX_FIELDS_PER_EMBED]
+        for i in range(0, len(shown_offers), MAX_FIELDS_PER_EMBED)
+    ]
+
+    embeds = []
+    for chunk_index, chunk in enumerate(chunks):
+        start = chunk_index * MAX_FIELDS_PER_EMBED
+        embed = {
+            "color": color,
+            "fields": [_offer_field(start + i + 1, offer) for i, offer in enumerate(chunk)],
+        }
+        if chunk_index == 0:
+            embed["title"] = f"MacBook Pro 14 M2 Pro — {len(offers)} Angebote gefunden"
+            embed["timestamp"] = now
+            best_image = next((o["image"] for o in shown_offers if o.get("image")), None)
+            if best_image:
+                embed["image"] = {"url": best_image}
+        embeds.append(embed)
+
+    return embeds, has_top_deal
 
 def send_discord_message(payload, webhook_url):
     try:
@@ -532,10 +552,10 @@ def main():
     for offer in good_offers:
         print(f" - [{offer['tier']}] {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
 
-    embed, has_top_deal = build_summary_embed(good_offers)
+    embeds, has_top_deal = build_summary_embeds(good_offers)
     payload = {
         "content": "@everyone Top-Deal(s) gefunden!" if has_top_deal else "",
-        "embeds": [embed],
+        "embeds": embeds,
     }
     send_discord_message(payload, webhook_url)
 
