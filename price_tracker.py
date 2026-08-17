@@ -18,11 +18,16 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # KONFIGURATION — hier kannst du Werte anpassen
 # ---------------------------------------------------------------------------
-PRICE_THRESHOLD_BARGAIN = 1100.0   # unter diesem Preis: GRUEN + @everyone-Ping
-PRICE_THRESHOLD_GOOD    = 1150.0   # bis hier: GELB — darueber: ROT
+# Realistischer Marktvergleich (Stand 2026): ein professionell aufbereitetes
+# Refurbished-Geraet dieses Modells mit Garantie kostet bei Haendlern derzeit
+# ca. 1.300-1.400 €. Alles deutlich darunter ist ein echtes Schnaeppchen,
+# alles in der Naehe ein fairer Preis, alles druemer ist im Vergleich zu teuer
+# und wird NICHT an Discord gemeldet.
+PRICE_THRESHOLD_BARGAIN = 950.0    # unter diesem Preis: GRUEN + @everyone-Ping (Schnaeppchen)
+PRICE_THRESHOLD_GOOD    = 1250.0   # bis hier: ORANGE (guter/fairer Preis) — darueber: wird ignoriert
 
 COLOR_GREEN  = 0x00FF00
-COLOR_YELLOW = 0xFFFF00
+COLOR_ORANGE = 0xFFA500
 COLOR_RED    = 0xFF0000
 
 # Verschiedene Suchbegriff-Varianten, weil Verkaeufer das Modell
@@ -318,14 +323,18 @@ def collect_all_offers():
 # ---------------------------------------------------------------------------
 # Discord Webhook
 # ---------------------------------------------------------------------------
+def classify_price(price):
+    """Ordnet einen Preis einer Farbe zu (GRUEN=Schnaeppchen, ORANGE=guter Preis,
+    ROT=zu teuer). ROT-Angebote werden in main() nicht an Discord gesendet."""
+    if price < PRICE_THRESHOLD_BARGAIN:
+        return COLOR_GREEN, True
+    if price <= PRICE_THRESHOLD_GOOD:
+        return COLOR_ORANGE, False
+    return COLOR_RED, False
+
 def send_discord_notification(offer, webhook_url):
     price = offer["price"]
-    if price < PRICE_THRESHOLD_BARGAIN:
-        color, ping = COLOR_GREEN, True
-    elif price <= PRICE_THRESHOLD_GOOD:
-        color, ping = COLOR_YELLOW, False
-    else:
-        color, ping = COLOR_RED, False
+    color, ping = classify_price(price)
 
     embed = {
         "title": offer["title"],
@@ -371,11 +380,24 @@ def main():
     # Guenstigstes Angebot zuerst, damit es in Discord oben in der History steht
     offers_sorted = sorted(offers, key=lambda o: o["price"])
 
-    print(f"{len(offers_sorted)} funktionsfaehige Angebote gefunden — sende alle an Discord.")
-    for index, offer in enumerate(offers_sorted):
+    # Nur GRUENE (Schnaeppchen) und ORANGE (guter Preis) Angebote werden gemeldet.
+    # Zu teure (ROT) Angebote werden nur in der Konsole geloggt, nicht an Discord gesendet.
+    good_offers = [o for o in offers_sorted if o["price"] <= PRICE_THRESHOLD_GOOD]
+    too_expensive = [o for o in offers_sorted if o["price"] > PRICE_THRESHOLD_GOOD]
+
+    print(f"{len(offers_sorted)} funktionsfaehige Angebote gefunden.")
+    for offer in too_expensive:
+        print(f" - UEBERSPRUNGEN (zu teuer): {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
+
+    if not good_offers:
+        print("Keine Angebote im gruenen/orangenen Preisbereich — es wird nichts gesendet.")
+        return
+
+    print(f"{len(good_offers)} gruene/orangene Angebote — sende an Discord.")
+    for index, offer in enumerate(good_offers):
         print(f" - {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
         send_discord_notification(offer, webhook_url)
-        if index < len(offers_sorted) - 1:
+        if index < len(good_offers) - 1:
             time.sleep(DISCORD_SEND_DELAY)
 
 if __name__ == "__main__":
