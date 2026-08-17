@@ -1,6 +1,6 @@
 """
 Preis-Tracker fuer MacBook Pro 14 M2 Pro (16GB RAM, 512GB SSD)
-Quellen: Kleinanzeigen.de und eBay.de
+Quellen: Kleinanzeigen.de, eBay.de, Back Market, refurbed
 """
 import os
 import random
@@ -174,6 +174,85 @@ def scrape_ebay():
     return results
 
 # ---------------------------------------------------------------------------
+# SCRAPER: Back Market (refurbished)
+# ---------------------------------------------------------------------------
+def scrape_back_market():
+    results = []
+    url = "https://www.backmarket.de/de-de/search?q=MacBook+Pro+14+M2+Pro+16GB+512GB"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"[Back Market] Fehler: {exc}", file=sys.stderr)
+        return results
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    cards = soup.select("[data-qa='productCard'], article")
+
+    for card in cards:
+        title_el = card.select_one("[data-qa='productCardTitle'], h2, h3")
+        price_el = card.select_one("[data-qa='productCardPrice'], [class*='price']")
+        link_el  = card.select_one("a[href]")
+        if not (title_el and price_el and link_el):
+            continue
+        title = title_el.get_text(strip=True)
+        price = _parse_price(price_el.get_text(strip=True))
+        href  = link_el.get("href", "")
+        if price is None or price < 400 or "macbook" not in title.lower():
+            continue
+        if is_broken(title):
+            continue
+        link = href if href.startswith("http") else f"https://www.backmarket.de{href}"
+        img  = card.select_one("img")
+        results.append({
+            "source": "Back Market",
+            "title": title,
+            "price": price,
+            "link":  link,
+            "image": img.get("src") if img else None,
+        })
+    return results
+
+# ---------------------------------------------------------------------------
+# SCRAPER: refurbed (refurbished)
+# ---------------------------------------------------------------------------
+def scrape_refurbed():
+    results = []
+    url = "https://www.refurbed.de/search?q=MacBook+Pro+14+M2+Pro+16GB+512GB"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"[refurbed] Fehler: {exc}", file=sys.stderr)
+        return results
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    cards = soup.select("a[href*='/p/']")
+
+    for card in cards:
+        title_el = card.select_one("[class*='title'], h2, h3")
+        price_el = card.select_one("[class*='price']")
+        if not (title_el and price_el):
+            continue
+        title = title_el.get_text(strip=True)
+        price = _parse_price(price_el.get_text(strip=True))
+        href  = card.get("href", "")
+        if price is None or price < 400 or "macbook" not in title.lower():
+            continue
+        if is_broken(title):
+            continue
+        link = href if href.startswith("http") else f"https://www.refurbed.de{href}"
+        img  = card.select_one("img")
+        results.append({
+            "source": "refurbed",
+            "title": title,
+            "price": price,
+            "link":  link,
+            "image": img.get("src") if img else None,
+        })
+    return results
+
+# ---------------------------------------------------------------------------
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
 def _parse_price(raw):
@@ -188,7 +267,7 @@ def _parse_price(raw):
 
 def collect_all_offers():
     offers = []
-    scrapers = [scrape_kleinanzeigen, scrape_ebay]
+    scrapers = [scrape_kleinanzeigen, scrape_ebay, scrape_back_market, scrape_refurbed]
     for index, scraper in enumerate(scrapers):
         try:
             found = scraper()
