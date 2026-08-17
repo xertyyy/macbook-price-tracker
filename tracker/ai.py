@@ -14,7 +14,7 @@ import sys
 
 import requests
 
-from tracker.config import GEMINI_MODEL_CANDIDATES, TIER_RANK
+from tracker.config import GEMINI_MODEL_CANDIDATES
 from tracker.models import ALL_SOURCES
 
 GEMINI_RATING_SCHEMA = {
@@ -37,13 +37,9 @@ GEMINI_RATING_SCHEMA = {
                 "properties": {
                     "index": {"type": "INTEGER"},
                     "passt_zum_produkt": {"type": "BOOLEAN"},
-                    "tier": {
-                        "type": "STRING",
-                        "enum": ["Top-Deal", "Gut", "Okay", "Vorsicht"],
-                    },
                     "begruendung": {"type": "STRING"},
                 },
-                "required": ["index", "passt_zum_produkt", "tier", "begruendung"],
+                "required": ["index", "passt_zum_produkt", "begruendung"],
             },
         },
     },
@@ -94,6 +90,24 @@ def _call_gemini(prompt, schema, api_key):
             continue
 
     raise last_exc or RuntimeError("Kein Gemini-Modell aus GEMINI_MODEL_CANDIDATES verfuegbar")
+
+
+def compute_tier_from_percentile(price, stats):
+    """Ordnet eine Qualitaetsstufe rein aus der Preis-Position innerhalb der
+    tatsaechlich gefundenen Preise DIESES Laufs zu (Quartile) — bewusst NICHT
+    von der KI-Marktpreis-Schaetzung abhaengig, weil deren absoluter Wert je
+    nach Produktwissen der KI daneben liegen kann (z. B. zu hoch geschaetzt,
+    wodurch sonst ploetzlich JEDES Angebot als 'Top-Deal' erscheint). Die
+    Quartile der real gefundenen Angebote sind dagegen immer kalibriert."""
+    if not stats:
+        return "Okay"
+    if price <= stats["p25"]:
+        return "Top-Deal"
+    if price <= stats["median"]:
+        return "Gut"
+    if price <= stats["p75"]:
+        return "Okay"
+    return "Vorsicht"
 
 
 def compute_price_stats(prices):
@@ -164,30 +178,31 @@ def _fallback_keyword(product_name):
     return max(tokens, key=len) if tokens else product_name.lower()
 
 
-def classify_price_fallback(price, median):
-    """Einfache Preis-Einstufung ohne KI, relativ zum Median DIESES Laufs
+def classify_price_fallback(price, stats):
+    """Einfache Preis-Einstufung ohne KI, aus den Quartilen DIESES Laufs
     (Fallback, falls kein GEMINI_API_KEY gesetzt ist oder die KI-Analyse
-    fehlschlaegt). Gibt None zurueck, wenn das Angebot zu teuer ist."""
-    if not median or median <= 0:
+    fehlschlaegt). Gibt None zurueck, wenn das Angebot zu teuer ist (oberstes
+    Quartil wird hier komplett ausgefiltert statt als 'Vorsicht' gezeigt,
+    da ohne KI-Relevanzpruefung vorsichtiger gefiltert werden sollte)."""
+    if not stats:
         return None
-    if price <= 0.75 * median:
+    if price <= stats["p25"]:
         return "Schnaeppchen"
-    if price <= median:
+    if price <= stats["median"]:
         return "Guter Preis"
     return None
 
 
 def _fallback_rate(offers, stats):
-    median = stats["median"] if stats else None
     kept = []
     for offer in offers:
-        tier = classify_price_fallback(offer["price"], median)
+        tier = classify_price_fallback(offer["price"], stats)
         if tier is None:
             continue
         offer["tier"] = tier
         offer["tier_note"] = ""
         kept.append(offer)
-    market = {"geschaetzter_marktpreis": median} if median else None
+    market = {"geschaetzter_marktpreis": stats["median"]} if stats else None
     return kept, market
 
 
@@ -208,19 +223,21 @@ def _rate_with_ai(product_name, offers, stats, api_key):
         "Preis-Tracker.\n\n"
         f"Preisverteilung in DIESEM Suchlauf: {stats_text}\n\n"
         "Aufgabe 1: Schaetze einen realistischen Marktpreis in EUR fuer ein "
-        "gebrauchtes/aufbereitetes Exemplar dieses Produkts in Deutschland — "
-        "aus deinem eigenen Produktwissen UND der Verteilung oben.\n\n"
+        "gebrauchtes/aufbereitetes Exemplar dieses Produkts in Deutschland. "
+        "WICHTIG: gewichte die tatsaechliche Preisverteilung oben STARK hoeher "
+        "als dein eigenes, moeglicherweise veraltetes Produktwissen — die "
+        "Verteilung zeigt echte, aktuelle Angebote, dein Wissen kann falsch "
+        "kalibriert sein (z. B. veralteter Neupreis). Nutze dein Produktwissen "
+        "nur, um offensichtliche Ausreisser in der Verteilung zu erkennen.\n\n"
         "Aufgabe 2: Ordne JEDES der folgenden Angebote ein:\n"
         "- passt_zum_produkt=false, wenn der Titel offensichtlich NICHT das "
         "gesuchte Produkt ist (z. B. nur Zubehoer, Huelle, Ersatzteil, ein "
-        "anderes Modell, ein Konvolut)\n"
-        "- tier, RELATIV zu deiner eigenen Marktpreis-Schaetzung:\n"
-        "  'Top-Deal': deutlich darunter UND Titel wirkt serioes/vollstaendig\n"
-        "  'Gut': klar darunter, Zustand wirkt laut Titel in Ordnung\n"
-        "  'Okay': etwa auf Marktniveau\n"
-        "  'Vorsicht': Titel vage/widerspruechlich/unvollstaendig, oder Preis "
-        "deutlich darueber\n"
-        "- begruendung: EIN kurzer deutscher Satz, max. 100 Zeichen\n\n"
+        "anderes Modell/andere Ausstattung, ein Konvolut)\n"
+        "- begruendung: EIN kurzer deutscher Satz zum Zustand/zur Ausstattung "
+        "laut Titel (z. B. \"Wirkt neuwertig, OVP erwaehnt\" oder \"Zustand "
+        "unklar, wenig Angaben\"), max. 100 Zeichen. Die Preis-Einstufung "
+        "macht der Tracker selbst anhand der Verteilung, dazu brauchst du "
+        "nichts zu sagen.\n\n"
         f"{listing_lines}\n\n"
         "Gib fuer JEDES Angebot genau einen Eintrag in 'ratings' zurueck."
     )
@@ -252,12 +269,9 @@ def apply_offer_ratings(offers, product_name, api_key):
             rating = rating_by_index.get(i)
             if not rating or not rating.get("passt_zum_produkt", True):
                 continue
-            tier = rating.get("tier")
-            if tier not in TIER_RANK:
-                continue
             if estimate and offer["price"] > estimate * 1.05:
                 continue
-            offer["tier"] = tier
+            offer["tier"] = compute_tier_from_percentile(offer["price"], stats)
             offer["tier_note"] = rating.get("begruendung", "")
             kept.append(offer)
 
