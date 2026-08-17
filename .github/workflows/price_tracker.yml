@@ -1,0 +1,27 @@
+name: MacBook Price Tracker
+
+on:
+  schedule:
+    # Laeuft alle 30 Minuten
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  track-price:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Dependencies installieren
+        run: pip install -r requirements.txt
+
+      - name: Preis-Tracker ausfuehren
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python price_tracker.py
