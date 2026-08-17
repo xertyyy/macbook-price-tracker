@@ -5,10 +5,10 @@ Kleinanzeigen.de, eBay.de, Back Market und refurbed. Alle 30 Minuten wird eine
 einzige Discord-Nachricht mit einer Tabelle aller guten Angebote gesendet
 (zu teure Angebote und defekte Geraete werden automatisch aussortiert).
 
-Optional bewertet Claude (Anthropic API) jedes Angebot anhand des Titels mit
-einer Qualitaetsstufe (Top-Deal / Gut / Okay / Vorsicht). Ohne API-Key stuft
-der Tracker automatisch nur nach Preis ein — der Tracker funktioniert in
-beiden Faellen.
+Optional bewertet Google Gemini (kostenloser Free-Tier) jedes Angebot anhand
+des Titels mit einer Qualitaetsstufe (Top-Deal / Gut / Okay / Vorsicht). Ohne
+API-Key stuft der Tracker automatisch nur nach Preis ein — der Tracker
+funktioniert in beiden Faellen.
 
 ## Setup — Schritt fuer Schritt
 
@@ -17,16 +17,21 @@ beiden Faellen.
 2. Kanal-Einstellungen -> **Integrationen** -> **Webhooks** -> **Neuer Webhook**.
 3. **Webhook-URL kopieren**.
 
-### 2. (Optional) Anthropic API-Key fuer die KI-Bewertung erstellen
+### 2. (Optional) Kostenlosen Google-Gemini API-Key fuer die KI-Bewertung erstellen
 Ohne diesen Schritt funktioniert der Tracker trotzdem — er stuft Angebote dann
-nur nach Preis ein (Schnaeppchen / Guter Preis) statt per KI-Analyse.
+nur nach Preis ein (Schnaeppchen / Guter Preis) statt per KI-Analyse. Der
+Gemini-Key ist dauerhaft **kostenlos** (Free-Tier, kein Kreditkarten-Zwang) und
+reicht bei dieser geringen Nutzung locker.
 
-1. Gehe zu [console.anthropic.com](https://console.anthropic.com) und melde dich an
-   bzw. erstelle ein Konto.
-2. Hinterlege etwas Guthaben unter **Billing** (dieser Tracker verbraucht durch die
-   geringe Textmenge nur Cent-Betraege pro Monat, auch bei einem Lauf alle 30 Min).
-3. Gehe zu **API Keys** -> **Create Key**, gib ihm einen Namen (z. B. `price-tracker`).
-4. Kopiere den angezeigten Key (beginnt mit `sk-ant-...`) — er wird nur einmal angezeigt.
+1. Gehe zu [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+   und melde dich mit einem Google-Konto an.
+2. Klicke auf **Create API key** (ggf. ein neues Projekt bestaetigen).
+3. Kopiere den angezeigten Key.
+
+Hinweis: Google kann die Free-Tier-Bedingungen (Rate-Limits, Modellnamen)
+jederzeit aendern — sollte `GEMINI_MODEL` in `price_tracker.py` irgendwann
+nicht mehr existieren, auf ai.google.dev nach dem aktuellen kostenlosen
+Flash-Modell schauen und die Konstante anpassen.
 
 ### 3. Projekt auf GitHub hochladen
 ```bash
@@ -43,7 +48,7 @@ git push -u origin main
 2. **New repository secret** klicken.
 3. Name: `DISCORD_WEBHOOK_URL`, Wert: die in Schritt 1 kopierte Webhook-URL. **Add secret**.
 4. Optional fuer die KI-Bewertung: nochmal **New repository secret**, Name:
-   `ANTHROPIC_API_KEY`, Wert: der in Schritt 2 kopierte Key. **Add secret**.
+   `GEMINI_API_KEY`, Wert: der in Schritt 2 kopierte Key. **Add secret**.
 
 ### 5. Tracker aktivieren
 - Der Workflow unter `.github/workflows/price_tracker.yml` startet automatisch alle
@@ -61,7 +66,7 @@ von `PRICE_THRESHOLD_GOOD` werden generell nicht an Discord gemeldet.
 ```bash
 pip install -r requirements.txt
 cp .env.example .env
-# .env oeffnen und DISCORD_WEBHOOK_URL (und optional ANTHROPIC_API_KEY) eintragen
+# .env oeffnen und DISCORD_WEBHOOK_URL (und optional GEMINI_API_KEY) eintragen
 python price_tracker.py
 ```
 

@@ -1,7 +1,9 @@
 """
 Preis-Tracker fuer MacBook Pro 14 M2 Pro (16GB RAM, 512GB SSD)
 Quellen: Kleinanzeigen.de, eBay.de, Back Market, refurbed
+KI-Zustandsbewertung optional ueber die kostenlose Google-Gemini-API
 """
+import json
 import os
 import random
 import re
@@ -30,13 +32,13 @@ COLOR_GREEN  = 0x00FF00
 COLOR_ORANGE = 0xFFA500
 COLOR_RED    = 0xFF0000
 
-# Anthropic-Modell fuer die KI-Zustandsbewertung der Angebote. Haiku ist
-# schnell und guenstig genug fuer diese einfache Einordnungs-Aufgabe;
-# fuer noch genauere Bewertungen kannst du auf "claude-sonnet-5" wechseln.
-ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+# Google-Gemini-Modell fuer die KOSTENLOSE KI-Zustandsbewertung der Angebote
+# (Free-Tier ueber Google AI Studio, siehe README). Falls Google den Namen
+# eines Free-Tier-Modells irgendwann aendert, hier anpassen.
+GEMINI_MODEL = "gemini-2.0-flash"
 
 # Reihenfolge/Sortierung und Emoji je Qualitaetsstufe. "Schnaeppchen" und
-# "Guter Preis" sind die Ersatz-Stufen, falls kein ANTHROPIC_API_KEY gesetzt
+# "Guter Preis" sind die Ersatz-Stufen, falls kein GEMINI_API_KEY gesetzt
 # ist bzw. die KI-Analyse fehlschlaegt (dann wird rein nach Preis bewertet).
 TIER_RANK = {
     "Top-Deal": 0,
@@ -344,41 +346,37 @@ def collect_all_offers():
     return deduped
 
 # ---------------------------------------------------------------------------
-# KI-Zustandsbewertung (Anthropic API)
+# KI-Zustandsbewertung (Google Gemini API, kostenloser Free-Tier)
 # ---------------------------------------------------------------------------
-RATE_OFFERS_TOOL = {
-    "name": "rate_offers",
-    "description": "Bewertet jedes Angebot mit einer Qualitaetsstufe.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "ratings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "index": {"type": "integer"},
-                        "tier": {
-                            "type": "string",
-                            "enum": ["Top-Deal", "Gut", "Okay", "Vorsicht"],
-                        },
-                        "begruendung": {"type": "string"},
+GEMINI_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "ratings": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "index": {"type": "INTEGER"},
+                    "tier": {
+                        "type": "STRING",
+                        "enum": ["Top-Deal", "Gut", "Okay", "Vorsicht"],
                     },
-                    "required": ["index", "tier", "begruendung"],
+                    "begruendung": {"type": "STRING"},
                 },
-            }
-        },
-        "required": ["ratings"],
+                "required": ["index", "tier", "begruendung"],
+            },
+        }
     },
+    "required": ["ratings"],
 }
 
 def classify_price_fallback(price):
     """Einfache Preis-Einstufung ohne KI (Fallback, falls kein
-    ANTHROPIC_API_KEY gesetzt ist oder die KI-Analyse fehlschlaegt)."""
+    GEMINI_API_KEY gesetzt ist oder die KI-Analyse fehlschlaegt)."""
     return "Schnaeppchen" if price < PRICE_THRESHOLD_BARGAIN else "Guter Preis"
 
 def analyze_offers_with_ai(offers, api_key):
-    """Laesst Claude jedes Angebot anhand von Titel/Preis/Quelle in eine
+    """Laesst Gemini jedes Angebot anhand von Titel/Preis/Quelle in eine
     Qualitaetsstufe einordnen und gibt eine Liste von
     {index, tier, begruendung} zurueck."""
     listing_lines = "\n".join(
@@ -398,41 +396,35 @@ def analyze_offers_with_ai(offers, api_key):
         "- 'Okay': fairer Preis, aber wenig Info zu Zustand/Ausstattung im Titel\n"
         "- 'Vorsicht': Titel wirkt vage, widerspruechlich oder es fehlen wichtige Angaben\n\n"
         f"{listing_lines}\n\n"
-        "Antworte ausschliesslich ueber das Tool rate_offers, mit einem Eintrag pro Angebot."
+        "Gib fuer JEDES Angebot genau einen Eintrag zurueck."
     )
 
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     body = {
-        "model": ANTHROPIC_MODEL,
-        "max_tokens": 2048,
-        "tools": [RATE_OFFERS_TOOL],
-        "tool_choice": {"type": "tool", "name": "rate_offers"},
-        "messages": [{"role": "user", "content": prompt}],
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": GEMINI_RESPONSE_SCHEMA,
+        },
     }
 
     resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers=headers,
+        url,
+        params={"key": api_key},
         json=body,
         timeout=60,
     )
     resp.raise_for_status()
     data = resp.json()
 
-    for block in data.get("content", []):
-        if block.get("type") == "tool_use" and block.get("name") == "rate_offers":
-            return block.get("input", {}).get("ratings", [])
-    return []
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    return json.loads(text).get("ratings", [])
 
 def apply_offer_ratings(offers, api_key):
     """Versieht jedes Angebot mit 'tier' und 'tier_note'. Nutzt die KI, falls
     ein API-Key vorhanden ist und der Aufruf klappt — sonst die Preis-Einstufung."""
     if not api_key:
-        print("ANTHROPIC_API_KEY nicht gesetzt — nutze einfache Preis-Einstufung statt KI-Analyse.")
+        print("GEMINI_API_KEY nicht gesetzt — nutze einfache Preis-Einstufung statt KI-Analyse.")
         for offer in offers:
             offer["tier"] = classify_price_fallback(offer["price"])
             offer["tier_note"] = ""
@@ -505,7 +497,7 @@ def main():
         print("FEHLER: DISCORD_WEBHOOK_URL nicht gesetzt.", file=sys.stderr)
         sys.exit(1)
 
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
 
     startup_delay = random.uniform(*STARTUP_JITTER_RANGE)
     print(f"Warte {startup_delay:.1f}s (Start-Jitter) vor der ersten Anfrage...")
@@ -533,7 +525,7 @@ def main():
         print("Keine Angebote im gruenen/orangenen Preisbereich — es wird nichts gesendet.")
         return
 
-    apply_offer_ratings(good_offers, anthropic_api_key)
+    apply_offer_ratings(good_offers, gemini_api_key)
     good_offers.sort(key=lambda o: (TIER_RANK.get(o["tier"], 99), o["price"]))
 
     print(f"{len(good_offers)} gruene/orangene Angebote — sende eine Sammel-Nachricht an Discord.")
