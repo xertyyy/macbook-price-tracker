@@ -1,4 +1,5 @@
-# HTTP-Requests fuer das Scraping der Marktplatz-Seiten
+# HTTP-Requests fuer das Scraping der Marktplatz-Seiten UND fuer den
+# Aufruf der Anthropic-API (KI-Zustandsbewertung) sowie des Discord-Webhooks
 requests==2.32.3
 
 # HTML-Parsing der Suchergebnis-Seiten

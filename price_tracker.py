@@ -30,6 +30,33 @@ COLOR_GREEN  = 0x00FF00
 COLOR_ORANGE = 0xFFA500
 COLOR_RED    = 0xFF0000
 
+# Anthropic-Modell fuer die KI-Zustandsbewertung der Angebote. Haiku ist
+# schnell und guenstig genug fuer diese einfache Einordnungs-Aufgabe;
+# fuer noch genauere Bewertungen kannst du auf "claude-sonnet-5" wechseln.
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+
+# Reihenfolge/Sortierung und Emoji je Qualitaetsstufe. "Schnaeppchen" und
+# "Guter Preis" sind die Ersatz-Stufen, falls kein ANTHROPIC_API_KEY gesetzt
+# ist bzw. die KI-Analyse fehlschlaegt (dann wird rein nach Preis bewertet).
+TIER_RANK = {
+    "Top-Deal": 0,
+    "Schnaeppchen": 0,
+    "Gut": 1,
+    "Guter Preis": 1,
+    "Okay": 2,
+    "Vorsicht": 3,
+    "Unbewertet": 4,
+}
+TIER_EMOJI = {
+    "Top-Deal": "🟢",
+    "Schnaeppchen": "🟢",
+    "Gut": "🟡",
+    "Guter Preis": "🟡",
+    "Okay": "🟠",
+    "Vorsicht": "🔴",
+    "Unbewertet": "⚪",
+}
+
 # Verschiedene Suchbegriff-Varianten, weil Verkaeufer das Modell
 # unterschiedlich betiteln. Jede Quelle wird mit JEDER Variante
 # durchsucht, damit moeglichst kein Angebot uebersehen wird.
@@ -78,10 +105,6 @@ def is_broken(title):
     lowered = title.lower()
     return any(keyword in lowered for keyword in BROKEN_KEYWORDS)
 
-
-# Pause zwischen einzelnen Discord-Nachrichten in Sekunden, um das Rate-Limit
-# des Webhooks (max. ca. 30 Nachrichten/Minute) nicht zu ueberschreiten.
-DISCORD_SEND_DELAY = 1.5
 
 # Mehrere realistische, aktuelle Browser-User-Agents — bei jedem Lauf wird
 # zufaellig einer gewaehlt, damit nicht jede Anfrage exakt gleich aussieht.
@@ -321,36 +344,151 @@ def collect_all_offers():
     return deduped
 
 # ---------------------------------------------------------------------------
+# KI-Zustandsbewertung (Anthropic API)
+# ---------------------------------------------------------------------------
+RATE_OFFERS_TOOL = {
+    "name": "rate_offers",
+    "description": "Bewertet jedes Angebot mit einer Qualitaetsstufe.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "ratings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": {"type": "integer"},
+                        "tier": {
+                            "type": "string",
+                            "enum": ["Top-Deal", "Gut", "Okay", "Vorsicht"],
+                        },
+                        "begruendung": {"type": "string"},
+                    },
+                    "required": ["index", "tier", "begruendung"],
+                },
+            }
+        },
+        "required": ["ratings"],
+    },
+}
+
+def classify_price_fallback(price):
+    """Einfache Preis-Einstufung ohne KI (Fallback, falls kein
+    ANTHROPIC_API_KEY gesetzt ist oder die KI-Analyse fehlschlaegt)."""
+    return "Schnaeppchen" if price < PRICE_THRESHOLD_BARGAIN else "Guter Preis"
+
+def analyze_offers_with_ai(offers, api_key):
+    """Laesst Claude jedes Angebot anhand von Titel/Preis/Quelle in eine
+    Qualitaetsstufe einordnen und gibt eine Liste von
+    {index, tier, begruendung} zurueck."""
+    listing_lines = "\n".join(
+        f"{i}. Titel: \"{offer['title']}\" | Preis: {offer['price']:.2f} EUR | Quelle: {offer['source']}"
+        for i, offer in enumerate(offers)
+    )
+
+    prompt = (
+        "Du bewertest gebrauchte/refurbished MacBook Pro 14 M2 Pro (16GB/512GB) "
+        "Angebote fuer einen persoenlichen Preis-Tracker. Ein professionell "
+        "aufbereitetes Refurbished-Geraet mit Garantie kostet am Markt aktuell "
+        "ca. 1.300-1.400 EUR.\n\n"
+        "Ordne JEDES der folgenden Angebote anhand von Titel, Preis und Quelle in "
+        "genau eine Stufe ein:\n"
+        "- 'Top-Deal': sehr guter Zustand/Ausstattung laut Titel UND deutlich unter Marktpreis\n"
+        "- 'Gut': guter Preis, Zustand wirkt laut Titel in Ordnung\n"
+        "- 'Okay': fairer Preis, aber wenig Info zu Zustand/Ausstattung im Titel\n"
+        "- 'Vorsicht': Titel wirkt vage, widerspruechlich oder es fehlen wichtige Angaben\n\n"
+        f"{listing_lines}\n\n"
+        "Antworte ausschliesslich ueber das Tool rate_offers, mit einem Eintrag pro Angebot."
+    )
+
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": 2048,
+        "tools": [RATE_OFFERS_TOOL],
+        "tool_choice": {"type": "tool", "name": "rate_offers"},
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers=headers,
+        json=body,
+        timeout=60,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+
+    for block in data.get("content", []):
+        if block.get("type") == "tool_use" and block.get("name") == "rate_offers":
+            return block.get("input", {}).get("ratings", [])
+    return []
+
+def apply_offer_ratings(offers, api_key):
+    """Versieht jedes Angebot mit 'tier' und 'tier_note'. Nutzt die KI, falls
+    ein API-Key vorhanden ist und der Aufruf klappt — sonst die Preis-Einstufung."""
+    if not api_key:
+        print("ANTHROPIC_API_KEY nicht gesetzt — nutze einfache Preis-Einstufung statt KI-Analyse.")
+        for offer in offers:
+            offer["tier"] = classify_price_fallback(offer["price"])
+            offer["tier_note"] = ""
+        return
+
+    try:
+        ratings = analyze_offers_with_ai(offers, api_key)
+        rating_by_index = {r["index"]: r for r in ratings if isinstance(r, dict) and "index" in r}
+        for i, offer in enumerate(offers):
+            rating = rating_by_index.get(i)
+            if rating and rating.get("tier") in TIER_RANK:
+                offer["tier"] = rating["tier"]
+                offer["tier_note"] = rating.get("begruendung", "")
+            else:
+                offer["tier"] = classify_price_fallback(offer["price"])
+                offer["tier_note"] = ""
+        print(f"KI-Analyse erfolgreich fuer {len(rating_by_index)}/{len(offers)} Angebote.")
+    except Exception as exc:
+        print(f"KI-Analyse fehlgeschlagen, nutze Preis-Einstufung: {exc}", file=sys.stderr)
+        for offer in offers:
+            offer["tier"] = classify_price_fallback(offer["price"])
+            offer["tier_note"] = ""
+
+# ---------------------------------------------------------------------------
 # Discord Webhook
 # ---------------------------------------------------------------------------
-def classify_price(price):
-    """Ordnet einen Preis einer Farbe zu (GRUEN=Schnaeppchen, ORANGE=guter Preis,
-    ROT=zu teuer). ROT-Angebote werden in main() nicht an Discord gesendet."""
-    if price < PRICE_THRESHOLD_BARGAIN:
-        return COLOR_GREEN, True
-    if price <= PRICE_THRESHOLD_GOOD:
-        return COLOR_ORANGE, False
-    return COLOR_RED, False
+def build_summary_embed(offers):
+    """Baut EIN Embed mit einer Tabelle aller Angebote (Stufe/Preis/Quelle/Titel)
+    plus einer nummerierten Link-Liste darunter."""
+    rows = ["#   Stufe          Preis      Quelle            Titel"]
+    rows.append("-" * 70)
+    links = []
 
-def send_discord_notification(offer, webhook_url):
-    price = offer["price"]
-    color, ping = classify_price(price)
+    for i, offer in enumerate(offers, start=1):
+        tier = offer.get("tier", "Unbewertet")
+        emoji = TIER_EMOJI.get(tier, "⚪")
+        title_short = offer["title"] if len(offer["title"]) <= 38 else offer["title"][:37] + "…"
+        rows.append(
+            f"{i:<3} {emoji} {tier:<11} {offer['price']:>8.2f}€  {offer['source']:<16}  {title_short}"
+        )
+        links.append(f"**[{i}]** [{offer['source']} – {offer['price']:.2f} €]({offer['link']})")
+
+    table = "\n".join(rows)
+    description = f"```\n{table}\n```\n" + "\n".join(links)
+
+    has_top_deal = any(offer.get("tier") in ("Top-Deal", "Schnaeppchen") for offer in offers)
 
     embed = {
-        "title": offer["title"],
-        "url":   offer["link"],
-        "description": f"**Preis:** {price:.2f} €\n**Quelle:** {offer['source']}",
-        "color": color,
+        "title": f"MacBook Pro 14 M2 Pro — {len(offers)} Angebote gefunden",
+        "description": description[:4096],
+        "color": COLOR_GREEN if has_top_deal else COLOR_ORANGE,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "fields": [{"name": "Direktlink", "value": f"[Zum Angebot]({offer['link']})", "inline": False}],
     }
-    if offer.get("image"):
-        embed["thumbnail"] = {"url": offer["image"]}
+    return embed, has_top_deal
 
-    payload = {
-        "content": "@everyone Schnaeppchen gefunden!" if ping else "",
-        "embeds": [embed],
-    }
+def send_discord_message(payload, webhook_url):
     try:
         resp = requests.post(webhook_url, json=payload, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
@@ -367,6 +505,8 @@ def main():
         print("FEHLER: DISCORD_WEBHOOK_URL nicht gesetzt.", file=sys.stderr)
         sys.exit(1)
 
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+
     startup_delay = random.uniform(*STARTUP_JITTER_RANGE)
     print(f"Warte {startup_delay:.1f}s (Start-Jitter) vor der ersten Anfrage...")
     time.sleep(startup_delay)
@@ -377,7 +517,7 @@ def main():
         print("Keine (funktionsfaehigen) Angebote gefunden.")
         return
 
-    # Guenstigstes Angebot zuerst, damit es in Discord oben in der History steht
+    # Guenstigstes Angebot zuerst
     offers_sorted = sorted(offers, key=lambda o: o["price"])
 
     # Nur GRUENE (Schnaeppchen) und ORANGE (guter Preis) Angebote werden gemeldet.
@@ -393,12 +533,19 @@ def main():
         print("Keine Angebote im gruenen/orangenen Preisbereich — es wird nichts gesendet.")
         return
 
-    print(f"{len(good_offers)} gruene/orangene Angebote — sende an Discord.")
-    for index, offer in enumerate(good_offers):
-        print(f" - {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
-        send_discord_notification(offer, webhook_url)
-        if index < len(good_offers) - 1:
-            time.sleep(DISCORD_SEND_DELAY)
+    apply_offer_ratings(good_offers, anthropic_api_key)
+    good_offers.sort(key=lambda o: (TIER_RANK.get(o["tier"], 99), o["price"]))
+
+    print(f"{len(good_offers)} gruene/orangene Angebote — sende eine Sammel-Nachricht an Discord.")
+    for offer in good_offers:
+        print(f" - [{offer['tier']}] {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
+
+    embed, has_top_deal = build_summary_embed(good_offers)
+    payload = {
+        "content": "@everyone Top-Deal(s) gefunden!" if has_top_deal else "",
+        "embeds": [embed],
+    }
+    send_discord_message(payload, webhook_url)
 
 if __name__ == "__main__":
     main()
