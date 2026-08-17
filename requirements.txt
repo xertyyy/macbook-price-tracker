@@ -1,0 +1,11 @@
+# HTTP-Requests fuer das Scraping der Marktplatz-Seiten
+requests==2.32.3
+
+# HTML-Parsing der Suchergebnis-Seiten
+beautifulsoup4==4.12.3
+
+# Schneller HTML-Parser fuer BeautifulSoup (bs4.BeautifulSoup(..., "lxml"))
+lxml==5.2.2
+
+# Laedt DISCORD_WEBHOOK_URL aus der .env-Datei (lokal, nicht auf GitHub Actions notwendig)
+python-dotenv==1.0.1
