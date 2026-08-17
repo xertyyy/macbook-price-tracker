@@ -8,6 +8,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from urllib.parse import quote_plus
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -23,6 +24,18 @@ PRICE_THRESHOLD_GOOD    = 1150.0   # bis hier: GELB — darueber: ROT
 COLOR_GREEN  = 0x00FF00
 COLOR_YELLOW = 0xFFFF00
 COLOR_RED    = 0xFF0000
+
+# Verschiedene Suchbegriff-Varianten, weil Verkaeufer das Modell
+# unterschiedlich betiteln. Jede Quelle wird mit JEDER Variante
+# durchsucht, damit moeglichst kein Angebot uebersehen wird.
+# Hier kannst du weitere Varianten ergaenzen oder entfernen.
+SEARCH_QUERIES = [
+    "MacBook Pro 14 M2 Pro 16GB 512GB",
+    "MacBook Pro 14 M2 Pro",
+    "MacBook Pro 14 Zoll M2 Pro",
+    "Apple MacBook Pro 14 2023 M2 Pro",
+    "MacBook Pro M2 Pro 14 Zoll 16 512",
+]
 
 # Woerter im Titel, bei denen ein Angebot als defekt/beschaedigt gilt und
 # NICHT gemeldet wird. Hier kannst du weitere Begriffe ergaenzen.
@@ -93,12 +106,17 @@ SITE_DELAY_RANGE = (4, 12)
 # rausgeht. Verhindert, dass Anfragen exakt zur vollen/halben Stunde kommen.
 STARTUP_JITTER_RANGE = (0, 90)
 
+def _kleinanzeigen_slug(query):
+    """Wandelt einen Suchbegriff in das Kleinanzeigen-URL-Format (a-b-c) um."""
+    slug = re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-")
+    return slug
+
 # ---------------------------------------------------------------------------
 # SCRAPER: Kleinanzeigen.de
 # ---------------------------------------------------------------------------
-def scrape_kleinanzeigen():
+def scrape_kleinanzeigen(query):
     results = []
-    url = "https://www.kleinanzeigen.de/s-macbook-pro-14-m2-pro/k0"
+    url = f"https://www.kleinanzeigen.de/s-{_kleinanzeigen_slug(query)}/k0"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
@@ -134,11 +152,11 @@ def scrape_kleinanzeigen():
 # ---------------------------------------------------------------------------
 # SCRAPER: eBay.de
 # ---------------------------------------------------------------------------
-def scrape_ebay():
+def scrape_ebay(query):
     results = []
     url = (
         "https://www.ebay.de/sch/i.html"
-        "?_nkw=MacBook+Pro+14+M2+Pro+16GB+512GB"
+        f"?_nkw={quote_plus(query)}"
         "&LH_ItemCondition=3000"
         "&_sacat=0"
     )
@@ -176,9 +194,9 @@ def scrape_ebay():
 # ---------------------------------------------------------------------------
 # SCRAPER: Back Market (refurbished)
 # ---------------------------------------------------------------------------
-def scrape_back_market():
+def scrape_back_market(query):
     results = []
-    url = "https://www.backmarket.de/de-de/search?q=MacBook+Pro+14+M2+Pro+16GB+512GB"
+    url = f"https://www.backmarket.de/de-de/search?q={quote_plus(query)}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
@@ -216,9 +234,9 @@ def scrape_back_market():
 # ---------------------------------------------------------------------------
 # SCRAPER: refurbed (refurbished)
 # ---------------------------------------------------------------------------
-def scrape_refurbed():
+def scrape_refurbed(query):
     results = []
-    url = "https://www.refurbed.de/search?q=MacBook+Pro+14+M2+Pro+16GB+512GB"
+    url = f"https://www.refurbed.de/search?q={quote_plus(query)}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
@@ -265,20 +283,37 @@ def _parse_price(raw):
     except ValueError:
         return None
 
+def _dedupe_offers(offers):
+    """Entfernt doppelte Treffer (gleicher Link), die durch mehrere
+    Suchanfrage-Varianten mehrfach gefunden wurden."""
+    seen = set()
+    deduped = []
+    for offer in offers:
+        if offer["link"] in seen:
+            continue
+        seen.add(offer["link"])
+        deduped.append(offer)
+    return deduped
+
 def collect_all_offers():
     offers = []
     scrapers = [scrape_kleinanzeigen, scrape_ebay, scrape_back_market, scrape_refurbed]
-    for index, scraper in enumerate(scrapers):
+    tasks = [(scraper, query) for scraper in scrapers for query in SEARCH_QUERIES]
+
+    for index, (scraper, query) in enumerate(tasks):
         try:
-            found = scraper()
-            print(f"{scraper.__name__}: {len(found)} Treffer")
+            found = scraper(query)
+            print(f"{scraper.__name__} ('{query}'): {len(found)} Treffer")
             offers.extend(found)
         except Exception as exc:
-            print(f"{scraper.__name__} Fehler: {exc}", file=sys.stderr)
-        if index < len(scrapers) - 1:
+            print(f"{scraper.__name__} ('{query}') Fehler: {exc}", file=sys.stderr)
+        if index < len(tasks) - 1:
             delay = random.uniform(*SITE_DELAY_RANGE)
             time.sleep(delay)
-    return offers
+
+    deduped = _dedupe_offers(offers)
+    print(f"{len(offers)} Rohtreffer, {len(deduped)} nach Entfernen von Duplikaten.")
+    return deduped
 
 # ---------------------------------------------------------------------------
 # Discord Webhook
