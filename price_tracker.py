@@ -32,10 +32,18 @@ COLOR_GREEN  = 0x00FF00
 COLOR_ORANGE = 0xFFA500
 COLOR_RED    = 0xFF0000
 
-# Google-Gemini-Modell fuer die KOSTENLOSE KI-Zustandsbewertung der Angebote
-# (Free-Tier ueber Google AI Studio, siehe README). Falls Google den Namen
-# eines Free-Tier-Modells irgendwann aendert, hier anpassen.
-GEMINI_MODEL = "gemini-2.0-flash"
+# Google-Gemini-Modelle fuer die KOSTENLOSE KI-Zustandsbewertung der Angebote
+# (Free-Tier ueber Google AI Studio, siehe README). Google stellt Modelle
+# regelmaessig ab (z. B. wurde gemini-2.0-flash am 1.6.2026 abgeschaltet) —
+# deshalb wird der Reihe nach durchprobiert. Erstes verfuegbares Modell
+# gewinnt. Falls irgendwann ALLE hier 404 liefern: auf ai.google.dev/gemini-api/docs/models
+# nachschauen, welche Modelle aktuell im Free-Tier verfuegbar sind, und
+# diese Liste aktualisieren.
+GEMINI_MODEL_CANDIDATES = [
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-flash-latest",
+]
 
 # Reihenfolge/Sortierung und Emoji je Qualitaetsstufe. "Schnaeppchen" und
 # "Guter Preis" sind die Ersatz-Stufen, falls kein GEMINI_API_KEY gesetzt
@@ -399,7 +407,6 @@ def analyze_offers_with_ai(offers, api_key):
         "Gib fuer JEDES Angebot genau einen Eintrag zurueck."
     )
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -408,17 +415,24 @@ def analyze_offers_with_ai(offers, api_key):
         },
     }
 
-    resp = requests.post(
-        url,
-        params={"key": api_key},
-        json=body,
-        timeout=60,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    last_exc = None
+    for model in GEMINI_MODEL_CANDIDATES:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        try:
+            resp = requests.post(url, params={"key": api_key}, json=body, timeout=60)
+            if resp.status_code == 404:
+                # Modell existiert nicht (mehr) fuer diesen Key/diese API-Version — naechstes probieren
+                last_exc = requests.HTTPError(f"Modell '{model}' nicht verfuegbar (404)")
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(text).get("ratings", [])
+        except requests.RequestException as exc:
+            last_exc = exc
+            continue
 
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text).get("ratings", [])
+    raise last_exc or RuntimeError("Kein Gemini-Modell aus GEMINI_MODEL_CANDIDATES verfuegbar")
 
 def apply_offer_ratings(offers, api_key):
     """Versieht jedes Angebot mit 'tier' und 'tier_note'. Nutzt die KI, falls
@@ -451,9 +465,14 @@ def apply_offer_ratings(offers, api_key):
 # ---------------------------------------------------------------------------
 # Discord Webhook
 # ---------------------------------------------------------------------------
-# Discord-Grenzen: max. 25 Felder pro Embed, max. 10 Embeds pro Nachricht.
-MAX_FIELDS_PER_EMBED = 25
-MAX_EMBEDS_PER_MESSAGE = 10
+# Discord-Grenzen: max. 25 Felder pro Embed UND max. 6000 Zeichen insgesamt
+# ueber ALLE Embeds einer Nachricht. Wir bleiben bei EINEM Embed pro Nachricht
+# und halten uns bewusst unter beiden Grenzen (Sicherheitsmarge), damit lange
+# Titel/Links nie zu einem 400-Fehler ("Bad Request") fuehren. Bei mehr
+# Angeboten als in eine Nachricht passen, werden mehrere Nachrichten gesendet.
+MAX_FIELDS_PER_EMBED = 20
+MAX_EMBED_CHARS = 5000
+MAX_MESSAGES = 10
 
 def _offer_field(index, offer):
     tier = offer.get("tier", "Unbewertet")
@@ -465,40 +484,58 @@ def _offer_field(index, offer):
         "inline": False,
     }
 
-def build_summary_embeds(offers):
-    """Baut ein oder mehrere Discord-Embeds mit je bis zu 25 sauber
-    formatierten, anklickbaren Angeboten (statt einer Textwand). Das erste
-    Embed bekommt Titel, Farbe und ein Vorschaubild des besten Angebots."""
+def build_offer_messages(offers):
+    """Baut eine Liste von Discord-Nachrichten-Payloads (je EIN Embed mit
+    anklickbaren Angeboten). Angebote werden nach Zeichen-/Feld-Budget auf
+    mehrere Nachrichten aufgeteilt, damit Discords 6000-Zeichen-Limit pro
+    Nachricht nie gerissen wird. Die erste Nachricht bekommt ein Vorschaubild."""
     has_top_deal = any(offer.get("tier") in ("Top-Deal", "Schnaeppchen") for offer in offers)
     color = COLOR_GREEN if has_top_deal else COLOR_ORANGE
     now = datetime.now(timezone.utc).isoformat()
 
-    max_offers = MAX_FIELDS_PER_EMBED * MAX_EMBEDS_PER_MESSAGE
-    shown_offers = offers[:max_offers]
-    if len(offers) > max_offers:
-        print(f"HINWEIS: {len(offers) - max_offers} weitere Angebote werden aus Platzgruenden nicht angezeigt.")
+    field_chunks = []
+    current_fields = []
+    current_chars = 0
 
-    chunks = [
-        shown_offers[i:i + MAX_FIELDS_PER_EMBED]
-        for i in range(0, len(shown_offers), MAX_FIELDS_PER_EMBED)
-    ]
+    for i, offer in enumerate(offers):
+        if len(field_chunks) >= MAX_MESSAGES:
+            remaining = len(offers) - i
+            print(f"HINWEIS: {remaining} weitere Angebote werden aus Nachrichten-Limit-Gruenden nicht gesendet.")
+            break
+        field = _offer_field(i + 1, offer)
+        field_chars = len(field["name"]) + len(field["value"])
+        if current_fields and (len(current_fields) >= MAX_FIELDS_PER_EMBED or current_chars + field_chars > MAX_EMBED_CHARS):
+            field_chunks.append(current_fields)
+            current_fields = []
+            current_chars = 0
+        current_fields.append(field)
+        current_chars += field_chars
+    if current_fields:
+        field_chunks.append(current_fields)
 
-    embeds = []
-    for chunk_index, chunk in enumerate(chunks):
-        start = chunk_index * MAX_FIELDS_PER_EMBED
-        embed = {
-            "color": color,
-            "fields": [_offer_field(start + i + 1, offer) for i, offer in enumerate(chunk)],
-        }
-        if chunk_index == 0:
-            embed["title"] = f"MacBook Pro 14 M2 Pro — {len(offers)} Angebote gefunden"
+    total = len(field_chunks)
+    payloads = []
+    for idx, fields in enumerate(field_chunks):
+        embed = {"color": color, "fields": fields}
+        embed["title"] = (
+            f"MacBook Pro 14 M2 Pro — {len(offers)} Angebote gefunden"
+            if total == 1
+            else f"MacBook Pro 14 M2 Pro — Teil {idx + 1}/{total} ({len(offers)} Angebote gesamt)"
+        )
+        if idx == 0:
             embed["timestamp"] = now
-            best_image = next((o["image"] for o in shown_offers if o.get("image")), None)
+            best_image = next(
+                (o["image"] for o in offers if o.get("image") and o["image"].startswith("http")),
+                None,
+            )
             if best_image:
                 embed["image"] = {"url": best_image}
-        embeds.append(embed)
+        payloads.append({
+            "content": "@everyone Top-Deal(s) gefunden!" if (has_top_deal and idx == 0) else "",
+            "embeds": [embed],
+        })
 
-    return embeds, has_top_deal
+    return payloads, has_top_deal
 
 def send_discord_message(payload, webhook_url):
     try:
@@ -507,6 +544,10 @@ def send_discord_message(payload, webhook_url):
         print("Discord-Nachricht gesendet.")
     except requests.RequestException as exc:
         print(f"Discord-Webhook Fehler: {exc}", file=sys.stderr)
+        try:
+            print(f"Discord-Antwort: {resp.text}", file=sys.stderr)
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # Main
@@ -552,12 +593,12 @@ def main():
     for offer in good_offers:
         print(f" - [{offer['tier']}] {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
 
-    embeds, has_top_deal = build_summary_embeds(good_offers)
-    payload = {
-        "content": "@everyone Top-Deal(s) gefunden!" if has_top_deal else "",
-        "embeds": embeds,
-    }
-    send_discord_message(payload, webhook_url)
+    payloads, _ = build_offer_messages(good_offers)
+    print(f"Sende {len(payloads)} Discord-Nachricht(en) fuer {len(good_offers)} Angebote.")
+    for idx, payload in enumerate(payloads):
+        send_discord_message(payload, webhook_url)
+        if idx < len(payloads) - 1:
+            time.sleep(1.5)
 
 if __name__ == "__main__":
     main()
