@@ -5,6 +5,7 @@ Quellen: Kleinanzeigen.de und eBay.de
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 import requests
 from bs4 import BeautifulSoup
@@ -21,6 +22,47 @@ PRICE_THRESHOLD_GOOD    = 1150.0   # bis hier: GELB — darueber: ROT
 COLOR_GREEN  = 0x00FF00
 COLOR_YELLOW = 0xFFFF00
 COLOR_RED    = 0xFF0000
+
+# Woerter im Titel, bei denen ein Angebot als defekt/beschaedigt gilt und
+# NICHT gemeldet wird. Hier kannst du weitere Begriffe ergaenzen.
+BROKEN_KEYWORDS = [
+    "wackelkontakt",
+    "defekt",
+    "kaputt",
+    "riss",
+    "gesprungen",
+    "beschaedigt",
+    "beschädigt",
+    "bastler",
+    "ersatzteil",
+    "nicht funktionsfaehig",
+    "nicht funktionsfähig",
+    "wasserschaden",
+    "fehler",
+    "schaden",
+    "ohne funktion",
+    "als ersatzteillager",
+    "battery issue",
+    "akku defekt",
+    "display defekt",
+    "displayschaden",
+    "displayfehler",
+    "bootet nicht",
+    "startet nicht",
+    "geht nicht an",
+    "biete zum ausschlachten",
+]
+
+
+def is_broken(title):
+    """Prueft, ob ein Angebotstitel auf ein defektes/beschaedigtes Geraet hindeutet."""
+    lowered = title.lower()
+    return any(keyword in lowered for keyword in BROKEN_KEYWORDS)
+
+
+# Pause zwischen einzelnen Discord-Nachrichten in Sekunden, um das Rate-Limit
+# des Webhooks (max. ca. 30 Nachrichten/Minute) nicht zu ueberschreiten.
+DISCORD_SEND_DELAY = 1.5
 
 HEADERS = {
     "User-Agent": (
@@ -56,6 +98,8 @@ def scrape_kleinanzeigen():
         price = _parse_price(price_el.get_text(strip=True))
         href  = link_el.get("href", "")
         if price is None or price < 400 or "macbook" not in title.lower():
+            continue
+        if is_broken(title):
             continue
         link = href if href.startswith("http") else f"https://www.kleinanzeigen.de{href}"
         img  = card.select_one("img")
@@ -98,6 +142,8 @@ def scrape_ebay():
         link  = link_el.get("href", "")
         if price is None or price < 400 or "macbook" not in title.lower():
             continue
+        if is_broken(title):
+            continue
         img = card.select_one("img")
         results.append({
             "source": "eBay.de",
@@ -131,9 +177,6 @@ def collect_all_offers():
         except Exception as exc:
             print(f"{scraper.__name__} Fehler: {exc}", file=sys.stderr)
     return offers
-
-def pick_cheapest(offers):
-    return min(offers, key=lambda o: o["price"]) if offers else None
 
 # ---------------------------------------------------------------------------
 # Discord Webhook
@@ -178,15 +221,21 @@ def main():
         print("FEHLER: DISCORD_WEBHOOK_URL nicht gesetzt.", file=sys.stderr)
         sys.exit(1)
 
-    offers   = collect_all_offers()
-    cheapest = pick_cheapest(offers)
+    offers = collect_all_offers()
 
-    if not cheapest:
-        print("Keine Angebote gefunden.")
+    if not offers:
+        print("Keine (funktionsfaehigen) Angebote gefunden.")
         return
 
-    print(f"Guenstigstes: {cheapest['title']} — {cheapest['price']:.2f} € ({cheapest['source']})")
-    send_discord_notification(cheapest, webhook_url)
+    # Guenstigstes Angebot zuerst, damit es in Discord oben in der History steht
+    offers_sorted = sorted(offers, key=lambda o: o["price"])
+
+    print(f"{len(offers_sorted)} funktionsfaehige Angebote gefunden — sende alle an Discord.")
+    for index, offer in enumerate(offers_sorted):
+        print(f" - {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
+        send_discord_notification(offer, webhook_url)
+        if index < len(offers_sorted) - 1:
+            time.sleep(DISCORD_SEND_DELAY)
 
 if __name__ == "__main__":
     main()
