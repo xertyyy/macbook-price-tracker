@@ -28,6 +28,10 @@ load_dotenv()
 PRICE_THRESHOLD_BARGAIN = 950.0    # unter diesem Preis: GRUEN + @everyone-Ping (Schnaeppchen)
 PRICE_THRESHOLD_GOOD    = 1250.0   # bis hier: ORANGE (guter/fairer Preis) — darueber: wird ignoriert
 
+# Maximale Anzahl Angebote, die an Discord gesendet werden (die besten zuerst:
+# hoechste Qualitaetsstufe, dann guenstigster Preis). Rest wird nur geloggt.
+MAX_OFFERS_TO_SHOW = 25
+
 COLOR_GREEN  = 0x00FF00
 COLOR_ORANGE = 0xFFA500
 COLOR_RED    = 0xFF0000
@@ -589,12 +593,16 @@ def main():
     apply_offer_ratings(good_offers, gemini_api_key)
     good_offers.sort(key=lambda o: (TIER_RANK.get(o["tier"], 99), o["price"]))
 
-    print(f"{len(good_offers)} gruene/orangene Angebote — sende eine Sammel-Nachricht an Discord.")
-    for offer in good_offers:
+    shown_offers = good_offers[:MAX_OFFERS_TO_SHOW]
+    if len(good_offers) > MAX_OFFERS_TO_SHOW:
+        print(f"HINWEIS: {len(good_offers) - MAX_OFFERS_TO_SHOW} weitere gute Angebote werden wegen MAX_OFFERS_TO_SHOW nicht gesendet.")
+
+    print(f"{len(shown_offers)} von {len(good_offers)} gruenen/orangenen Angeboten werden an Discord gesendet.")
+    for offer in shown_offers:
         print(f" - [{offer['tier']}] {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
 
-    payloads, _ = build_offer_messages(good_offers)
-    print(f"Sende {len(payloads)} Discord-Nachricht(en) fuer {len(good_offers)} Angebote.")
+    payloads, _ = build_offer_messages(shown_offers)
+    print(f"Sende {len(payloads)} Discord-Nachricht(en) fuer {len(shown_offers)} Angebote.")
     for idx, payload in enumerate(payloads):
         send_discord_message(payload, webhook_url)
         if idx < len(payloads) - 1:
