@@ -30,6 +30,11 @@ class Product:
     sources: list = field(default_factory=lambda: list(ALL_SOURCES))
     min_price: float = 0.0
     max_price: float = None
+    # Nur gesetzt, wenn das Product aus der Datenbank kommt (ab M1) — beim
+    # hartcodierten M0-Literal bleiben das die Defaults.
+    id: int = None
+    status: str = "ready"
+    fail_streak: int = 0
 
     def __post_init__(self):
         if not self.slug:

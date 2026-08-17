@@ -1,24 +1,28 @@
 """
 Orchestrierung: fuer jedes getrackte Produkt scrapen -> KI-bewerten ->
-an Discord senden.
+in der Datenbank speichern -> nur NEUE Angebote an Discord senden.
 
-M0-Stand: Produktliste ist ein hartcodiertes Literal (MACBOOK_PRODUCT). Ab
-M1 kommt die Liste aus einer Datenbank (mehrere Produkte, serverweit geteilt,
-per Discord-Bot verwaltet) — run_for_product() aendert sich dafuer nicht.
+Produkte kommen ab jetzt aus Supabase (geteilte, serverweite Liste) statt
+aus einem hartcodierten Literal. Ist die Datenbank leer (allererster Lauf),
+wird automatisch ein Standard-Produkt (MacBook) angelegt, damit der Tracker
+sofort weiterlaeuft, ohne dass von Hand ein Eintrag erstellt werden muss.
 """
 import os
 import random
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 from tracker.ai import apply_offer_ratings
 from tracker.config import MAX_OFFERS_TO_SHOW, STARTUP_JITTER_RANGE, TIER_RANK
 from tracker.embeds import build_offer_messages, send_discord_message
 from tracker.models import Product
 from tracker.scrapers import collect_offers_for_product
+from tracker.store import Store
 
-# TODO(M1): aus der Datenbank laden statt hartcodiert.
-MACBOOK_PRODUCT = Product(
+# Vorlage fuer das allererste, automatisch angelegte Produkt (siehe
+# _seed_default_product). Danach kommen weitere Produkte per /track dazu.
+DEFAULT_PRODUCT = Product(
     name="MacBook Pro 14 M2 Pro 16GB 512GB",
     queries=[
         "MacBook Pro 14 M2 Pro 16GB 512GB",
@@ -31,24 +35,101 @@ MACBOOK_PRODUCT = Product(
     min_price=400.0,
 )
 
+# Wie lange run_all() hoechstens scrapen darf, bevor es fuer diesen Lauf
+# abbricht (Rest kommt beim naechsten Cron-Durchlauf dran). Laesst Puffer
+# im 30-Minuten-Fenster fuer Setup/Checkout/pip install.
+DEFAULT_BUDGET_SECONDS = 1500
 
-def run_for_product(product, webhook_url, gemini_api_key):
-    offers = collect_offers_for_product(product)
+# Wie viele Produkte pro Lauf hoechstens bearbeitet werden (Budgeted-Round-
+# Robin: die am laengsten nicht gescrapten zuerst).
+DEFAULT_PRODUCT_LIMIT = 12
+
+# Clock-Skew-Toleranz beim Erkennen "neuer" Angebote (first_seen_at vs.
+# Laufstart) — verhindert, dass ein Angebot faelschlich als "schon bekannt"
+# gilt, nur weil unsere Uhr ein paar Sekunden vor/nach der DB-Uhr liegt.
+NEW_OFFER_CLOCK_SKEW = timedelta(seconds=5)
+
+
+def _seed_default_product(store):
+    print("Keine Produkte in der Datenbank — lege Standard-Produkt an.")
+    product = store.add_product(DEFAULT_PRODUCT.name)
+    store.set_product_config(
+        product.id,
+        queries=DEFAULT_PRODUCT.queries,
+        required_keywords=DEFAULT_PRODUCT.required_keywords,
+        min_price=DEFAULT_PRODUCT.min_price,
+        status="ready",
+    )
+
+
+def _is_new_offer(row, run_started):
+    first_seen = row.get("first_seen_at")
+    if not first_seen:
+        return True
+    try:
+        first_seen_dt = datetime.fromisoformat(first_seen.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return first_seen_dt >= run_started - NEW_OFFER_CLOCK_SKEW
+
+
+def run_for_product(product, store, webhook_url, gemini_api_key, *, push_all=False):
+    """Ein voller Durchlauf fuer EIN Produkt: scrapen, bewerten, speichern,
+    nur neue (oder bei push_all=True alle passenden) Angebote senden."""
+    run_started = datetime.now(timezone.utc)
+    run_id = store.start_run(product.id)
+
+    try:
+        offers = collect_offers_for_product(product)
+    except Exception as exc:
+        print(f"Scraping fehlgeschlagen: {exc}", file=sys.stderr)
+        store.finish_run(run_id, status="error", error=str(exc))
+        store.touch_product(product.id, run_id=run_id, ok=False)
+        return
+
     if not offers:
         print("Keine (funktionsfaehigen) Angebote gefunden.")
+        store.finish_run(run_id, status="no_results", offers_found=0, offers_kept=0, offers_new=0)
+        store.touch_product(product.id, run_id=run_id, ok=True)
         return
 
     kept, market_info = apply_offer_ratings(offers, product.name, gemini_api_key)
+
+    stats_body = {"offers_found": len(offers), "offers_kept": len(kept)}
+    if market_info and market_info.get("geschaetzter_marktpreis"):
+        stats_body["ai_market_estimate"] = market_info["geschaetzter_marktpreis"]
+        if market_info.get("begruendung"):
+            stats_body["ai_market_note"] = market_info["begruendung"]
+
     if not kept:
-        print("Keine Angebote nach KI-Bewertung/Preisfilter uebrig — es wird nichts gesendet.")
+        print("Keine Angebote nach KI-Bewertung/Preisfilter uebrig.")
+        store.finish_run(run_id, status="ok", offers_new=0, **stats_body)
+        store.touch_product(product.id, run_id=run_id, ok=True)
         return
 
     kept.sort(key=lambda o: (TIER_RANK.get(o["tier"], 99), o["price"]))
-    shown = kept[:MAX_OFFERS_TO_SHOW]
-    if len(kept) > MAX_OFFERS_TO_SHOW:
-        print(f"HINWEIS: {len(kept) - MAX_OFFERS_TO_SHOW} weitere gute Angebote werden wegen MAX_OFFERS_TO_SHOW nicht gesendet.")
 
-    print(f"{len(shown)} von {len(kept)} passenden Angeboten werden an Discord gesendet.")
+    rows = store.upsert_offers(product.id, run_id, kept)
+    store.record_price_points(product.id, run_id, kept)
+
+    rows_by_link = {r["link"]: r for r in rows}
+    if push_all:
+        to_send = kept
+    else:
+        to_send = [o for o in kept if _is_new_offer(rows_by_link.get(o["link"], {}), run_started)]
+
+    store.finish_run(run_id, status="ok", offers_new=len(to_send), **stats_body)
+    store.touch_product(product.id, run_id=run_id, ok=True)
+
+    if not to_send:
+        print(f"{len(kept)} passende Angebote, aber 0 davon neu — keine Discord-Nachricht.")
+        return
+
+    shown = to_send[:MAX_OFFERS_TO_SHOW]
+    if len(to_send) > MAX_OFFERS_TO_SHOW:
+        print(f"HINWEIS: {len(to_send) - MAX_OFFERS_TO_SHOW} weitere neue Angebote werden wegen MAX_OFFERS_TO_SHOW nicht gesendet.")
+
+    print(f"{len(shown)} von {len(to_send)} neuen Angeboten werden an Discord gesendet.")
     for offer in shown:
         print(f" - [{offer['tier']}] {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
 
@@ -60,10 +141,34 @@ def run_for_product(product, webhook_url, gemini_api_key):
             time.sleep(1.5)
 
 
+def run_all(webhook_url, gemini_api_key, *, budget_seconds=DEFAULT_BUDGET_SECONDS, limit=DEFAULT_PRODUCT_LIMIT):
+    store = Store()
+
+    if not store.list_products(active_only=False):
+        _seed_default_product(store)
+
+    products = store.products_due(limit=limit)
+    if not products:
+        print("Keine aktiven Produkte in der Datenbank.")
+        return
+
+    started_at = time.monotonic()
+    for product in products:
+        if time.monotonic() - started_at > budget_seconds:
+            print("Zeitbudget fuer diesen Lauf aufgebraucht — Rest folgt beim naechsten Mal.")
+            break
+        print(f"=== Produkt: {product.name} ===")
+        run_for_product(product, store, webhook_url, gemini_api_key)
+
+
 def main():
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     if not webhook_url:
         print("FEHLER: DISCORD_WEBHOOK_URL nicht gesetzt.", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_SERVICE_KEY"):
+        print("FEHLER: SUPABASE_URL/SUPABASE_SERVICE_KEY nicht gesetzt.", file=sys.stderr)
         sys.exit(1)
 
     gemini_api_key = os.getenv("GEMINI_API_KEY")
@@ -72,10 +177,7 @@ def main():
     print(f"Warte {startup_delay:.1f}s (Start-Jitter) vor der ersten Anfrage...")
     time.sleep(startup_delay)
 
-    products = [MACBOOK_PRODUCT]
-    for product in products:
-        print(f"=== Produkt: {product.name} ===")
-        run_for_product(product, webhook_url, gemini_api_key)
+    run_all(webhook_url, gemini_api_key)
 
 
 if __name__ == "__main__":
