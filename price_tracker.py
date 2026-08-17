@@ -3,6 +3,7 @@ Preis-Tracker fuer MacBook Pro 14 M2 Pro (16GB RAM, 512GB SSD)
 Quellen: Kleinanzeigen.de und eBay.de
 """
 import os
+import random
 import re
 import sys
 import time
@@ -64,15 +65,33 @@ def is_broken(title):
 # des Webhooks (max. ca. 30 Nachrichten/Minute) nicht zu ueberschreiten.
 DISCORD_SEND_DELAY = 1.5
 
+# Mehrere realistische, aktuelle Browser-User-Agents — bei jedem Lauf wird
+# zufaellig einer gewaehlt, damit nicht jede Anfrage exakt gleich aussieht.
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
+]
+
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": random.choice(USER_AGENTS),
     "Accept-Language": "de-DE,de;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 REQUEST_TIMEOUT = 15
+
+# Verzoegerung zwischen den Anfragen an die einzelnen Marktplaetze (Sekunden).
+# Zufaelliger Wert in diesem Bereich, damit die Anfragen nicht wie ein
+# starres Skript im Sekundentakt aussehen.
+SITE_DELAY_RANGE = (4, 12)
+
+# Zufaellige Startverzoegerung (Sekunden), bevor ueberhaupt die erste Anfrage
+# rausgeht. Verhindert, dass Anfragen exakt zur vollen/halben Stunde kommen.
+STARTUP_JITTER_RANGE = (0, 90)
 
 # ---------------------------------------------------------------------------
 # SCRAPER: Kleinanzeigen.de
@@ -169,13 +188,17 @@ def _parse_price(raw):
 
 def collect_all_offers():
     offers = []
-    for scraper in [scrape_kleinanzeigen, scrape_ebay]:
+    scrapers = [scrape_kleinanzeigen, scrape_ebay]
+    for index, scraper in enumerate(scrapers):
         try:
             found = scraper()
             print(f"{scraper.__name__}: {len(found)} Treffer")
             offers.extend(found)
         except Exception as exc:
             print(f"{scraper.__name__} Fehler: {exc}", file=sys.stderr)
+        if index < len(scrapers) - 1:
+            delay = random.uniform(*SITE_DELAY_RANGE)
+            time.sleep(delay)
     return offers
 
 # ---------------------------------------------------------------------------
@@ -220,6 +243,10 @@ def main():
     if not webhook_url:
         print("FEHLER: DISCORD_WEBHOOK_URL nicht gesetzt.", file=sys.stderr)
         sys.exit(1)
+
+    startup_delay = random.uniform(*STARTUP_JITTER_RANGE)
+    print(f"Warte {startup_delay:.1f}s (Start-Jitter) vor der ersten Anfrage...")
+    time.sleep(startup_delay)
 
     offers = collect_all_offers()
 
