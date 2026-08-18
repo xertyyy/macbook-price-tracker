@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preis-Tracker Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --bg-elevated: #171a21;
+    --card: #1b1f27;
+    --card-border: #262b35;
+    --text: #e8eaed;
+    --text-muted: #8b93a1;
+    --text-faint: #5b6270;
+    --accent: #5b8cff;
+
+    --tier-top: #22c55e;
+    --tier-top-bg: rgba(34, 197, 94, 0.12);
+    --tier-good: #eab308;
+    --tier-good-bg: rgba(234, 179, 8, 0.12);
+    --tier-okay: #f97316;
+    --tier-okay-bg: rgba(249, 115, 22, 0.12);
+    --tier-caution: #ef4444;
+    --tier-caution-bg: rgba(239, 68, 68, 0.12);
+    --tier-unknown: #6b7280;
+    --tier-unknown-bg: rgba(107, 114, 128, 0.12);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.4;
+  }
+
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--card-border);
+    padding: 20px 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  header h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  header .sub {
+    color: var(--text-muted);
+    font-size: 13px;
+    margin-top: 2px;
+  }
+
+  #refreshBtn {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    color: var(--text);
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  #refreshBtn:hover { background: #232833; }
+  #refreshBtn:disabled { opacity: 0.5; cursor: default; }
+
+  main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 24px 28px 64px;
+  }
+
+  .product-section {
+    margin-bottom: 40px;
+  }
+
+  .product-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .product-header h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .product-header .count {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .product-header .updated {
+    color: var(--text-faint);
+    font-size: 12px;
+    margin-left: auto;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 14px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.12s, border-color 0.12s;
+  }
+  .card:hover {
+    border-color: #3a4150;
+    transform: translateY(-1px);
+  }
+
+  .card-tier-bar {
+    height: 4px;
+    width: 100%;
+  }
+
+  .card-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+  }
+
+  .card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .price {
+    font-size: 22px;
+    font-weight: 700;
+  }
+
+  .tier-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  .card-media {
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    background: #0d0f13;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .card-media img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .card-media .placeholder {
+    color: var(--text-faint);
+    font-size: 32px;
+  }
+
+  .title-link {
+    color: var(--text);
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+  .title-link:hover { color: var(--accent); text-decoration: underline; }
+
+  .meta-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .source-tag {
+    background: var(--bg-elevated);
+    border: 1px solid var(--card-border);
+    padding: 2px 8px;
+    border-radius: 6px;
+  }
+
+  .reasoning {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-style: italic;
+    border-left: 2px solid var(--card-border);
+    padding-left: 10px;
+    margin-top: auto;
+  }
+
+  .state-message {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 60px 20px;
+    font-size: 14px;
+  }
+  .state-message.error { color: var(--tier-caution); }
+
+  ::-webkit-scrollbar { width: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 5px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>🔎 Preis-Tracker Dashboard</h1>
+    <div class="sub" id="headerSub">Lade Daten…</div>
+  </div>
+  <button id="refreshBtn" onclick="loadDashboard()">🔄 Aktualisieren</button>
+</header>
+
+<main id="main">
+  <div class="state-message">Lade Daten…</div>
+</main>
+
+<script>
+// --- Konfiguration -----------------------------------------------------
+// SUPABASE_URL ist unbedenklich (keine Geheimnisse). SUPABASE_ANON_KEY ist
+// der "Publishable Key" aus Supabase -> Project Settings -> API Keys -- der
+// ist extra dafuer gedacht, in einer Webseite zu stehen (im Gegensatz zum
+// service_role/secret Key, der NIEMALS hier landen darf). Der Zugriff ist
+// serverseitig per RLS-Policy auf reines Lesen von products/offers begrenzt
+// (siehe scripts/add_dashboard_read_policy.sql).
+const SUPABASE_URL = "SUPABASE_URL_HIER_EINFUEGEN";
+const SUPABASE_ANON_KEY = "SUPABASE_PUBLISHABLE_KEY_HIER_EINFUEGEN";
+
+const TIER_STYLES = {
+  "Top-Deal":     { bar: "var(--tier-top)",     badgeBg: "var(--tier-top-bg)",     badgeColor: "var(--tier-top)",     emoji: "🟢" },
+  "Schnaeppchen": { bar: "var(--tier-top)",     badgeBg: "var(--tier-top-bg)",     badgeColor: "var(--tier-top)",     emoji: "🟢" },
+  "Gut":          { bar: "var(--tier-good)",    badgeBg: "var(--tier-good-bg)",    badgeColor: "var(--tier-good)",    emoji: "🟡" },
+  "Guter Preis":  { bar: "var(--tier-good)",    badgeBg: "var(--tier-good-bg)",    badgeColor: "var(--tier-good)",    emoji: "🟡" },
+  "Okay":         { bar: "var(--tier-okay)",    badgeBg: "var(--tier-okay-bg)",    badgeColor: "var(--tier-okay)",    emoji: "🟠" },
+  "Vorsicht":     { bar: "var(--tier-caution)", badgeBg: "var(--tier-caution-bg)", badgeColor: "var(--tier-caution)", emoji: "🔴" },
+};
+const DEFAULT_TIER_STYLE = { bar: "var(--tier-unknown)", badgeBg: "var(--tier-unknown-bg)", badgeColor: "var(--tier-unknown)", emoji: "⚪" };
+const TIER_ORDER = ["Top-Deal", "Schnaeppchen", "Gut", "Guter Preis", "Okay", "Vorsicht"];
+
+async function sbFetch(path) {
+  const resp = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+    },
+  });
+  if (!resp.ok) {
+    throw new Error(`Supabase-Fehler ${resp.status}: ${await resp.text()}`);
+  }
+  return resp.json();
+}
+
+function timeAgo(isoString) {
+  if (!isoString) return "noch nie";
+  const diffMs = Date.now() - new Date(isoString).getTime();
+  const min = Math.round(diffMs / 60000);
+  if (min < 1) return "gerade eben";
+  if (min < 60) return `vor ${min} Min`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `vor ${h} Std`;
+  return `vor ${Math.round(h / 24)} Tagen`;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str ?? "";
+  return div.innerHTML;
+}
+
+function renderCard(offer) {
+  const style = TIER_STYLES[offer.tier] || DEFAULT_TIER_STYLE;
+  const price = Number(offer.price).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const media = offer.image
+    ? `<div class="card-media"><img src="${escapeHtml(offer.image)}" loading="lazy" alt=""></div>`
+    : `<div class="card-media"><span class="placeholder">🛍️</span></div>`;
+
+  const reasoning = offer.tier_note
+    ? `<div class="reasoning">${escapeHtml(offer.tier_note)}</div>`
+    : "";
+
+  return `
+    <div class="card">
+      ${media}
+      <div class="card-tier-bar" style="background:${style.bar}"></div>
+      <div class="card-body">
+        <div class="card-top">
+          <span class="price">${price} €</span>
+          <span class="tier-badge" style="background:${style.badgeBg}; color:${style.badgeColor}">
+            ${style.emoji} ${escapeHtml(offer.tier || "Unbewertet")}
+          </span>
+        </div>
+        <a class="title-link" href="${escapeHtml(offer.link)}" target="_blank" rel="noopener noreferrer">
+          ${escapeHtml(offer.title)}
+        </a>
+        <div class="meta-row">
+          <span class="source-tag">${escapeHtml(offer.source)}</span>
+          <span>${timeAgo(offer.last_seen_at)} gesehen</span>
+        </div>
+        ${reasoning}
+      </div>
+    </div>
+  `;
+}
+
+function tierRank(tier) {
+  const idx = TIER_ORDER.indexOf(tier);
+  return idx === -1 ? 99 : idx;
+}
+
+function renderProductSection(product, offers) {
+  const sorted = [...offers].sort((a, b) => {
+    const rankDiff = tierRank(a.tier) - tierRank(b.tier);
+    if (rankDiff !== 0) return rankDiff;
+    return Number(a.price) - Number(b.price);
+  });
+
+  const cardsHtml = sorted.length
+    ? sorted.map(renderCard).join("")
+    : `<div class="state-message">Noch keine Angebote fuer dieses Produkt.</div>`;
+
+  return `
+    <section class="product-section">
+      <div class="product-header">
+        <h2>${escapeHtml(product.name)}</h2>
+        <span class="count">${sorted.length} Angebot${sorted.length === 1 ? "" : "e"}</span>
+        <span class="updated">Zuletzt geprueft: ${timeAgo(product.last_scraped_at)}</span>
+      </div>
+      <div class="grid">${cardsHtml}</div>
+    </section>
+  `;
+}
+
+async function loadDashboard() {
+  const main = document.getElementById("main");
+  const headerSub = document.getElementById("headerSub");
+  const btn = document.getElementById("refreshBtn");
+  btn.disabled = true;
+
+  try {
+    const products = await sbFetch("products?select=*&active=eq.true&order=name.asc");
+
+    if (!products.length) {
+      main.innerHTML = `<div class="state-message">Noch keine Produkte getrackt.</div>`;
+      headerSub.textContent = "0 Produkte";
+      return;
+    }
+
+    const sections = await Promise.all(products.map(async (product) => {
+      const offers = await sbFetch(`offers?select=*&product_id=eq.${product.id}&order=price.asc`);
+      return renderProductSection(product, offers);
+    }));
+
+    main.innerHTML = sections.join("");
+    headerSub.textContent = `${products.length} Produkt${products.length === 1 ? "" : "e"} · aktualisiert ${new Date().toLocaleTimeString("de-DE")}`;
+  } catch (err) {
+    main.innerHTML = `<div class="state-message error">Fehler beim Laden: ${escapeHtml(err.message)}<br><br>Pruefe SUPABASE_URL / SUPABASE_ANON_KEY oben im Script und ob scripts/add_dashboard_read_policy.sql ausgefuehrt wurde.</div>`;
+    headerSub.textContent = "Fehler";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+loadDashboard();
+// Automatisch alle 5 Minuten neu laden.
+setInterval(loadDashboard, 5 * 60 * 1000);
+</script>
+
+</body>
+</html>

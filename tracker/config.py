@@ -15,6 +15,11 @@ COLOR_GREEN  = 0x00FF00
 COLOR_ORANGE = 0xFFA500
 COLOR_RED    = 0xFF0000
 
+# Live-Dashboard (dashboard/index.html), gehostet ueber GitHub Pages. Wird
+# in jede Discord-Nachricht als klickbarer Link eingebettet. Falls das Repo
+# umbenannt/verschoben wird, hier anpassen.
+DASHBOARD_URL = "https://xertyyy.github.io/macbook-price-tracker/dashboard/"
+
 # ---------------------------------------------------------------------------
 # Google-Gemini-Modelle fuer die KOSTENLOSE KI-Bewertung (Free-Tier ueber
 # Google AI Studio, siehe README). Google stellt Modelle regelmaessig ab

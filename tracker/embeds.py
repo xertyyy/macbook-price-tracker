@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from tracker.config import COLOR_GREEN, COLOR_ORANGE, TIER_EMOJI, REQUEST_TIMEOUT
+from tracker.config import COLOR_GREEN, COLOR_ORANGE, DASHBOARD_URL, TIER_EMOJI, REQUEST_TIMEOUT
 
 # Discord-Grenzen: max. 25 Felder pro Embed UND max. 6000 Zeichen insgesamt
 # ueber ALLE Embeds einer Nachricht. Wir bleiben bei EINEM Embed pro Nachricht
@@ -79,6 +79,7 @@ def build_offer_messages(product_name, offers, market_info=None):
         )
         if idx == 0:
             embed["timestamp"] = now
+            embed["description"] = f"📊 [Alle Angebote im Dashboard ansehen]({DASHBOARD_URL})"
             best_image = next(
                 (o["image"] for o in offers if o.get("image") and o["image"].startswith("http")),
                 None,
