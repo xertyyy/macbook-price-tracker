@@ -1,6 +1,10 @@
 """
-Generischer Scraper: EIN Ablauf (SiteSpec + scrape_site) statt vier fast
-identischer Funktionen. Neue Marktplaetze = ein neuer SITES-Eintrag.
+Sammelt Rohangebote aus mehreren Quellen: HTML-Scraping (SiteSpec +
+scrape_site) fuer Kleinanzeigen.de/refurbed, offizielle API fuer eBay.de
+(siehe tracker/ebay_api.py). Jede Quelle liefert nur RAW-Kandidaten
+(Titel/Preis/Link/Bild) zurueck -- die eigentliche Preis-/Relevanz-Filterung
+(accept()) passiert zentral in collect_offers_for_product(), damit sie nicht
+pro Quelle dupliziert werden muss.
 """
 import re
 import sys
@@ -13,6 +17,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from tracker.config import HEADERS, REQUEST_TIMEOUT, SITE_DELAY_RANGE, is_broken
+from tracker.ebay_api import search_ebay_offers
 
 
 def _kleinanzeigen_slug(query):
@@ -43,31 +48,11 @@ SITES = {
         link_sel="a[href]",
         base_url="https://www.kleinanzeigen.de",
     ),
-    "ebay": SiteSpec(
-        key="ebay",
-        label="eBay.de",
-        build_url=lambda q: (
-            "https://www.ebay.de/sch/i.html"
-            f"?_nkw={quote_plus(q)}"
-            "&LH_ItemCondition=3000"
-            "&_sacat=0"
-        ),
-        card_sel=".s-item",
-        title_sel=".s-item__title",
-        price_sel=".s-item__price",
-        link_sel="a.s-item__link",
-        base_url="",
-    ),
-    "backmarket": SiteSpec(
-        key="backmarket",
-        label="Back Market",
-        build_url=lambda q: f"https://www.backmarket.de/de-de/search?q={quote_plus(q)}",
-        card_sel="[data-qa='productCard'], article",
-        title_sel="[data-qa='productCardTitle'], h2, h3",
-        price_sel="[data-qa='productCardPrice'], [class*='price']",
-        link_sel="a[href]",
-        base_url="https://www.backmarket.de",
-    ),
+    # eBay.de laeuft NICHT mehr ueber HTML-Scraping, sondern ueber die
+    # offizielle Browse-API (tracker/ebay_api.py) -- siehe SOURCES unten.
+    # Back Market bewusst NICHT enthalten: blockiert Anfragen von GitHub-
+    # Actions-IPs kategorisch mit 403 (IP-Reputations-Sperre, keine offizielle
+    # API vorhanden).
     "refurbed": SiteSpec(
         key="refurbed",
         label="refurbed",
@@ -78,6 +63,24 @@ SITES = {
         link_sel=None,
         base_url="https://www.refurbed.de",
     ),
+}
+
+
+@dataclass(frozen=True)
+class SourceHandler:
+    key: str
+    label: str
+    fetch: object  # Callable[[str, Product], list[dict]] -> RAW, ungefilterte Kandidaten
+
+
+def _make_html_handler(spec):
+    return SourceHandler(key=spec.key, label=spec.label, fetch=lambda query, product: scrape_site(spec, query, product))
+
+
+SOURCES = {
+    "kleinanzeigen": _make_html_handler(SITES["kleinanzeigen"]),
+    "refurbed": _make_html_handler(SITES["refurbed"]),
+    "ebay": SourceHandler(key="ebay", label="eBay.de", fetch=lambda query, product: search_ebay_offers(query)),
 }
 
 
@@ -112,6 +115,9 @@ def accept(title, price, product):
 
 
 def scrape_site(spec, query, product):
+    """Laedt die Suchergebnis-Seite und liefert RAW-Kandidaten (Titel/Preis/
+    Link/Bild) OHNE Preis-/Relevanz-Filterung — die passiert zentral in
+    collect_offers_for_product()."""
     results = []
     url = spec.build_url(query)
     try:
@@ -132,8 +138,6 @@ def scrape_site(spec, query, product):
         title = title_el.get_text(strip=True)
         price = _parse_price(price_el.get_text(strip=True))
         href = link_el.get("href", "")
-        if not accept(title, price, product):
-            continue
 
         link = href if href.startswith("http") else f"{spec.base_url}{href}"
         img = card.select_one("img")
@@ -161,19 +165,21 @@ def _dedupe_offers(offers):
 
 
 def collect_offers_for_product(product):
-    """Durchsucht alle in product.sources aktivierten Marktplaetze mit allen
-    product.queries-Varianten und liefert deduplizierte Treffer zurueck."""
+    """Durchsucht alle in product.sources aktivierten Quellen mit allen
+    product.queries-Varianten, filtert zentral per accept() und liefert
+    deduplizierte Treffer zurueck."""
     offers = []
-    active_sites = [SITES[key] for key in product.sources if key in SITES]
-    tasks = [(site, query) for site in active_sites for query in product.queries]
+    active_sources = [SOURCES[key] for key in product.sources if key in SOURCES]
+    tasks = [(source, query) for source in active_sources for query in product.queries]
 
-    for index, (site, query) in enumerate(tasks):
+    for index, (source, query) in enumerate(tasks):
         try:
-            found = scrape_site(site, query, product)
-            print(f"{site.label} ('{query}'): {len(found)} Treffer")
+            raw = source.fetch(query, product)
+            found = [o for o in raw if accept(o["title"], o["price"], product)]
+            print(f"{source.label} ('{query}'): {len(found)}/{len(raw)} Treffer nach Filter")
             offers.extend(found)
         except Exception as exc:
-            print(f"{site.label} ('{query}') Fehler: {exc}", file=sys.stderr)
+            print(f"{source.label} ('{query}') Fehler: {exc}", file=sys.stderr)
         if index < len(tasks) - 1:
             delay = random.uniform(*SITE_DELAY_RANGE)
             time.sleep(delay)

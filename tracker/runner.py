@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from tracker.ai import apply_offer_ratings
 from tracker.config import MAX_OFFERS_TO_SHOW, STARTUP_JITTER_RANGE, TIER_RANK
-from tracker.embeds import build_checkin_message, build_offer_messages, send_discord_message
+from tracker.embeds import build_checkin_message, build_offer_messages, count_by_source, send_discord_message
 from tracker.models import Product
 from tracker.scrapers import collect_offers_for_product
 from tracker.store import Store
@@ -84,8 +84,9 @@ def _send_daily_checkin(store, webhook_url):
         return
     summaries = []
     for product in products:
-        best = store.current_offers(product.id, limit=1)
-        summaries.append((product.name, best[0] if best else None))
+        current = store.current_offers(product.id, limit=100)
+        best = current[0] if current else None
+        summaries.append((product.name, best, count_by_source(current)))
     print(f"Sende taegliche Check-in-Nachricht fuer {len(summaries)} Produkt(e).")
     send_discord_message(build_checkin_message(summaries), webhook_url)
 
@@ -161,7 +162,7 @@ def run_for_product(product, store, webhook_url, gemini_api_key, *, push_all=Fal
     for offer in shown:
         print(f" - [{offer['tier']}] {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
 
-    payloads, _ = build_offer_messages(product.name, shown, market_info)
+    payloads, _ = build_offer_messages(product.name, shown, market_info, source_counts=count_by_source(kept))
     print(f"Sende {len(payloads)} Discord-Nachricht(en) fuer {len(shown)} Angebote.")
     for idx, payload in enumerate(payloads):
         send_discord_message(payload, webhook_url)

@@ -7,8 +7,10 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 
-# Alle vier aktuell unterstuetzten Marktplaetze — siehe tracker/scrapers.py.
-ALL_SOURCES = ["kleinanzeigen", "ebay", "backmarket", "refurbed"]
+# Aktuell unterstuetzte Marktplaetze — siehe tracker/scrapers.py. Back Market
+# bewusst nicht enthalten (blockiert GitHub-Actions-IPs kategorisch, keine
+# offizielle API verfuegbar, siehe Kommentar in scrapers.py).
+ALL_SOURCES = ["kleinanzeigen", "ebay", "refurbed"]
 
 
 def slugify(name):

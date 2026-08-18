@@ -112,6 +112,12 @@
     margin-left: auto;
   }
 
+  .source-counts {
+    color: var(--text-faint);
+    font-size: 12px;
+    margin: -8px 0 16px;
+  }
+
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -337,6 +343,17 @@ function tierRank(tier) {
   return idx === -1 ? 99 : idx;
 }
 
+function formatSourceCounts(offers) {
+  const counts = {};
+  for (const o of offers) {
+    counts[o.source] = (counts[o.source] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([source, count]) => `${source}: ${count}`)
+    .join(" · ");
+}
+
 function renderProductSection(product, offers) {
   const sorted = [...offers].sort((a, b) => {
     const rankDiff = tierRank(a.tier) - tierRank(b.tier);
@@ -348,6 +365,8 @@ function renderProductSection(product, offers) {
     ? sorted.map(renderCard).join("")
     : `<div class="state-message">Noch keine Angebote fuer dieses Produkt.</div>`;
 
+  const sourceCountsText = formatSourceCounts(sorted);
+
   return `
     <section class="product-section">
       <div class="product-header">
@@ -355,6 +374,7 @@ function renderProductSection(product, offers) {
         <span class="count">${sorted.length} Angebot${sorted.length === 1 ? "" : "e"}</span>
         <span class="updated">Zuletzt geprueft: ${timeAgo(product.last_scraped_at)}</span>
       </div>
+      ${sourceCountsText ? `<div class="source-counts">${escapeHtml(sourceCountsText)}</div>` : ""}
       <div class="grid">${cardsHtml}</div>
     </section>
   `;

@@ -20,6 +20,21 @@ MAX_EMBED_CHARS = 5000
 MAX_MESSAGES = 10
 
 
+def count_by_source(offers):
+    """Zaehlt Angebote je Quelle, z.B. {'Kleinanzeigen.de': 24, 'eBay.de': 3}."""
+    counts = {}
+    for offer in offers:
+        counts[offer["source"]] = counts.get(offer["source"], 0) + 1
+    return counts
+
+
+def _format_source_counts(counts):
+    if not counts:
+        return ""
+    parts = [f"{source}: {count}" for source, count in sorted(counts.items(), key=lambda kv: -kv[1])]
+    return " · ".join(parts)
+
+
 def _offer_field(offer):
     tier = offer.get("tier", "Unbewertet")
     emoji = TIER_EMOJI.get(tier, "⚪")
@@ -38,12 +53,13 @@ def _offer_field(offer):
     }
 
 
-def build_offer_messages(product_name, offers, market_info=None):
+def build_offer_messages(product_name, offers, market_info=None, source_counts=None):
     """Baut eine Liste von Discord-Nachrichten-Payloads (je EIN Embed mit
     anklickbaren Angeboten + KI-Begruendung). Angebote werden nach Zeichen-/
     Feld-Budget auf mehrere Nachrichten aufgeteilt, damit Discords 6000-
     Zeichen-Limit pro Nachricht nie gerissen wird. Die erste Nachricht bekommt
-    ein Vorschaubild und (falls vorhanden) die KI-Marktschaetzung im Footer."""
+    ein Vorschaubild und im Footer die Anzahl Angebote je Quelle plus (falls
+    vorhanden) die KI-Marktschaetzung."""
     has_top_deal = any(offer.get("tier") in ("Top-Deal", "Schnaeppchen") for offer in offers)
     color = COLOR_GREEN if has_top_deal else COLOR_ORANGE
     now = datetime.now(timezone.utc).isoformat()
@@ -87,8 +103,13 @@ def build_offer_messages(product_name, offers, market_info=None):
             if best_image:
                 embed["image"] = {"url": best_image}
             estimate = (market_info or {}).get("geschaetzter_marktpreis")
+            footer_parts = []
+            if source_counts:
+                footer_parts.append(_format_source_counts(source_counts))
             if estimate:
-                embed["footer"] = {"text": f"KI-Marktschaetzung: ~{estimate:.0f} €"}
+                footer_parts.append(f"KI-Marktschaetzung: ~{estimate:.0f} €")
+            if footer_parts:
+                embed["footer"] = {"text": " · ".join(footer_parts)}
         payloads.append({
             "content": "@everyone Top-Deal(s) gefunden!" if (has_top_deal and idx == 0) else "",
             "embeds": [embed],
@@ -100,13 +121,16 @@ def build_offer_messages(product_name, offers, market_info=None):
 def build_checkin_message(product_summaries):
     """Baut eine kompakte Tages-Uebersicht mit Dashboard-Link, unabhaengig
     davon ob gerade neue Angebote gefunden wurden. product_summaries:
-    Liste von (produkt_name, guenstigstes_angebot_oder_None)."""
+    Liste von (produkt_name, guenstigstes_angebot_oder_None, source_counts)."""
     fields = []
-    for name, best in product_summaries[:25]:
+    for name, best, source_counts in product_summaries[:25]:
         if best:
             value = f"Günstigstes aktuell: {float(best['price']):.2f} € ({best['source']})"
         else:
             value = "Noch keine Angebote gefunden."
+        counts_text = _format_source_counts(source_counts)
+        if counts_text:
+            value += f"\n{counts_text}"
         fields.append({"name": name, "value": value, "inline": False})
 
     embed = {
