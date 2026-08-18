@@ -15,10 +15,16 @@ from datetime import datetime, timedelta, timezone
 
 from tracker.ai import apply_offer_ratings
 from tracker.config import MAX_OFFERS_TO_SHOW, STARTUP_JITTER_RANGE, TIER_RANK
-from tracker.embeds import build_offer_messages, send_discord_message
+from tracker.embeds import build_checkin_message, build_offer_messages, send_discord_message
 from tracker.models import Product
 from tracker.scrapers import collect_offers_for_product
 from tracker.store import Store
+
+# Stunde (UTC), in der einmal taeglich eine Check-in-Nachricht mit
+# Dashboard-Link gesendet wird — unabhaengig davon, ob neue Angebote
+# gefunden wurden. Nur EIN Cron-Tick pro Tag matcht (siehe
+# _should_send_daily_checkin): der jeweils erste Lauf nach dieser Uhrzeit.
+DAILY_CHECKIN_HOUR_UTC = 9
 
 # Vorlage fuer das allererste, automatisch angelegte Produkt (siehe
 # _seed_default_product). Danach kommen weitere Produkte per /track dazu.
@@ -60,6 +66,28 @@ def _seed_default_product(store):
         min_price=DEFAULT_PRODUCT.min_price,
         status="ready",
     )
+
+
+def _should_send_daily_checkin(run_started_at):
+    """Feuert nur beim ersten Cron-Tick der Stunde DAILY_CHECKIN_HOUR_UTC
+    (Minute < 5 faengt den :00-Tick samt Start-Jitter ab, schliesst den
+    :30-Tick derselben Stunde aber aus) — dadurch genau einmal pro Tag.
+    Nimmt den Zeitpunkt vom LAUFSTART entgegen (nicht neu abgefragt), da das
+    Scraping selbst mehrere Minuten dauern kann und das 5-Minuten-Fenster
+    sonst laengst vorbei waere."""
+    return run_started_at.hour == DAILY_CHECKIN_HOUR_UTC and run_started_at.minute < 5
+
+
+def _send_daily_checkin(store, webhook_url):
+    products = store.list_products(active_only=True)
+    if not products:
+        return
+    summaries = []
+    for product in products:
+        best = store.current_offers(product.id, limit=1)
+        summaries.append((product.name, best[0] if best else None))
+    print(f"Sende taegliche Check-in-Nachricht fuer {len(summaries)} Produkt(e).")
+    send_discord_message(build_checkin_message(summaries), webhook_url)
 
 
 def _is_new_offer(row, run_started):
@@ -142,6 +170,7 @@ def run_for_product(product, store, webhook_url, gemini_api_key, *, push_all=Fal
 
 
 def run_all(webhook_url, gemini_api_key, *, budget_seconds=DEFAULT_BUDGET_SECONDS, limit=DEFAULT_PRODUCT_LIMIT):
+    run_started_at = datetime.now(timezone.utc)
     store = Store()
 
     if not store.list_products(active_only=False):
@@ -150,15 +179,17 @@ def run_all(webhook_url, gemini_api_key, *, budget_seconds=DEFAULT_BUDGET_SECOND
     products = store.products_due(limit=limit)
     if not products:
         print("Keine aktiven Produkte in der Datenbank.")
-        return
+    else:
+        started_at = time.monotonic()
+        for product in products:
+            if time.monotonic() - started_at > budget_seconds:
+                print("Zeitbudget fuer diesen Lauf aufgebraucht — Rest folgt beim naechsten Mal.")
+                break
+            print(f"=== Produkt: {product.name} ===")
+            run_for_product(product, store, webhook_url, gemini_api_key)
 
-    started_at = time.monotonic()
-    for product in products:
-        if time.monotonic() - started_at > budget_seconds:
-            print("Zeitbudget fuer diesen Lauf aufgebraucht — Rest folgt beim naechsten Mal.")
-            break
-        print(f"=== Produkt: {product.name} ===")
-        run_for_product(product, store, webhook_url, gemini_api_key)
+    if _should_send_daily_checkin(run_started_at):
+        _send_daily_checkin(store, webhook_url)
 
 
 def main():

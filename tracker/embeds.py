@@ -97,6 +97,28 @@ def build_offer_messages(product_name, offers, market_info=None):
     return payloads, has_top_deal
 
 
+def build_checkin_message(product_summaries):
+    """Baut eine kompakte Tages-Uebersicht mit Dashboard-Link, unabhaengig
+    davon ob gerade neue Angebote gefunden wurden. product_summaries:
+    Liste von (produkt_name, guenstigstes_angebot_oder_None)."""
+    fields = []
+    for name, best in product_summaries[:25]:
+        if best:
+            value = f"Günstigstes aktuell: {float(best['price']):.2f} € ({best['source']})"
+        else:
+            value = "Noch keine Angebote gefunden."
+        fields.append({"name": name, "value": value, "inline": False})
+
+    embed = {
+        "title": "📊 Preis-Tracker — Tagesübersicht",
+        "description": f"[Alle Angebote im Dashboard ansehen]({DASHBOARD_URL})",
+        "color": COLOR_ORANGE,
+        "fields": fields,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    return {"content": "", "embeds": [embed]}
+
+
 def send_discord_message(payload, webhook_url):
     try:
         resp = requests.post(webhook_url, json=payload, timeout=REQUEST_TIMEOUT)
