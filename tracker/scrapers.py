@@ -95,6 +95,15 @@ def _parse_price(raw):
         return None
 
 
+def _contains_keyword(text, keyword):
+    """Wortgrenzen-Suche statt reiner Teilstring-Suche: "8gb" darf NICHT in
+    "18gb" matchen (waere sonst ein Teilstring-Treffer und wuerde faelschlich
+    18GB-Angebote mit ausschliessen, wenn "8gb" auf der exclude_keywords-
+    Liste steht)."""
+    pattern = r"\b" + re.escape(keyword) + r"\b"
+    return re.search(pattern, text) is not None
+
+
 def accept(title, price, product):
     """Generischer Angebots-Filter: Preisgrenzen, Defekt-Woerter und die
     (breiten) Produkt-Schluesselwoerter. Feinere Relevanzpruefung ('ist das
@@ -107,9 +116,9 @@ def accept(title, price, product):
     if is_broken(title):
         return False
     lowered = title.lower()
-    if product.required_keywords and not all(k in lowered for k in product.required_keywords):
+    if product.required_keywords and not all(_contains_keyword(lowered, k) for k in product.required_keywords):
         return False
-    if any(k in lowered for k in product.exclude_keywords):
+    if any(_contains_keyword(lowered, k) for k in product.exclude_keywords):
         return False
     return True
 
