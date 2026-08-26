@@ -37,7 +37,7 @@ DEFAULT_PRODUCT = Product(
         "Apple MacBook Pro 14 2023 M3 Pro",
         "MacBook Pro M3 Pro 14 Zoll 18 512",
     ],
-    required_keywords=["macbook", "m3"],
+    required_keywords=["macbook", "m3 pro"],
     exclude_keywords=["8gb", "16gb", "36gb", "8 gb", "16 gb", "36 gb"],
     min_price=500.0,
 )

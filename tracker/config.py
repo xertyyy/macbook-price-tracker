@@ -13,8 +13,14 @@ load_dotenv()
 def contains_keyword(text, keyword):
     """Wortgrenzen-Suche statt reiner Teilstring-Suche: "fehler" darf NICHT
     in "fehlerfrei" matchen, "8gb" darf NICHT in "18gb" matchen. Gemeinsam
-    genutzt von is_broken() hier und tracker/scrapers.py's accept()."""
-    pattern = r"\b" + re.escape(keyword) + r"\b"
+    genutzt von is_broken() hier und tracker/scrapers.py's accept().
+
+    Leerzeichen im Suchbegriff werden als FLEXIBLER Trenner behandelt (Space,
+    Bindestrich oder gar keiner) — "m3 pro" matcht damit "M3 Pro", "M3-Pro"
+    UND "M3Pro", je nachdem wie der Verkaeufer es geschrieben hat."""
+    tokens = keyword.split(" ")
+    flexible = r"[\s\-]*".join(re.escape(t) for t in tokens)
+    pattern = r"\b" + flexible + r"\b"
     return re.search(pattern, text) is not None
 
 # ---------------------------------------------------------------------------
