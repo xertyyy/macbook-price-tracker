@@ -38,6 +38,7 @@ DEFAULT_PRODUCT = Product(
         "MacBook Pro M3 Pro 14 Zoll 18 512",
     ],
     required_keywords=["macbook", "m3"],
+    exclude_keywords=["8gb", "16gb", "36gb", "8 gb", "16 gb", "36 gb"],
     min_price=500.0,
 )
 
@@ -63,6 +64,7 @@ def _seed_default_product(store):
         product.id,
         queries=DEFAULT_PRODUCT.queries,
         required_keywords=DEFAULT_PRODUCT.required_keywords,
+        exclude_keywords=DEFAULT_PRODUCT.exclude_keywords,
         min_price=DEFAULT_PRODUCT.min_price,
         status="ready",
     )
