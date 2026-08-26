@@ -29,16 +29,16 @@ DAILY_CHECKIN_HOUR_UTC = 9
 # Vorlage fuer das allererste, automatisch angelegte Produkt (siehe
 # _seed_default_product). Danach kommen weitere Produkte per /track dazu.
 DEFAULT_PRODUCT = Product(
-    name="MacBook Pro 14 M2 Pro 16GB 512GB",
+    name="MacBook Pro 14 M3 Pro 18GB 512GB",
     queries=[
-        "MacBook Pro 14 M2 Pro 16GB 512GB",
-        "MacBook Pro 14 M2 Pro",
-        "MacBook Pro 14 Zoll M2 Pro",
-        "Apple MacBook Pro 14 2023 M2 Pro",
-        "MacBook Pro M2 Pro 14 Zoll 16 512",
+        "MacBook Pro 14 M3 Pro 18GB 512GB",
+        "MacBook Pro 14 M3 Pro",
+        "MacBook Pro 14 Zoll M3 Pro",
+        "Apple MacBook Pro 14 2023 M3 Pro",
+        "MacBook Pro M3 Pro 14 Zoll 18 512",
     ],
-    required_keywords=["macbook"],
-    min_price=400.0,
+    required_keywords=["macbook", "m3"],
+    min_price=500.0,
 )
 
 # Wie lange run_all() hoechstens scrapen darf, bevor es fuer diesen Lauf
