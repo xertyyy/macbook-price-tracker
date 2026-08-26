@@ -88,6 +88,13 @@ def search_ebay_offers(query):
         title = item.get("title")
         link = item.get("itemWebUrl")
         price_info = item.get("price") or {}
+        # Trotz X-EBAY-C-MARKETPLACE-ID: EBAY_DE kann die Browse API vereinzelt
+        # Cross-Border-/Global-Shipping-Angebote mit abweichender Waehrung
+        # liefern. Ohne diese Pruefung wuerde z. B. ein USD-Preis ungeprueft
+        # als EUR behandelt.
+        currency = price_info.get("currency")
+        if currency and currency != "EUR":
+            continue
         try:
             price = float(price_info.get("value"))
         except (TypeError, ValueError):

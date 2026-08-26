@@ -297,9 +297,16 @@ function timeAgo(isoString) {
 }
 
 function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str ?? "";
-  return div.innerHTML;
+  // Explizite Escapes statt textContent->innerHTML: die DOM-Technik escaped
+  // laut HTML-Spezifikation nur &, <, > in Text-Knoten, NIE Anfuehrungszeichen
+  // -- reicht also nicht, wenn das Ergebnis (wie hier bei offer.link/.image)
+  // auch in Attributwerten (href="...", src="...") landet.
+  return String(str ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function renderCard(offer) {

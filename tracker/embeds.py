@@ -69,19 +69,23 @@ def build_offer_messages(product_name, offers, market_info=None, source_counts=N
     current_chars = 0
 
     for i, offer in enumerate(offers):
-        if len(field_chunks) >= MAX_MESSAGES:
-            remaining = len(offers) - i
-            print(f"HINWEIS: {remaining} weitere Angebote werden aus Nachrichten-Limit-Gruenden nicht gesendet.")
-            break
         field = _offer_field(offer)
         field_chars = len(field["name"]) + len(field["value"])
         if current_fields and (len(current_fields) >= MAX_FIELDS_PER_EMBED or current_chars + field_chars > MAX_EMBED_CHARS):
             field_chunks.append(current_fields)
             current_fields = []
             current_chars = 0
+            # Erst NACH dem Schliessen eines Chunks pruefen, ob das Limit
+            # erreicht ist -- sonst wird der zu diesem Zeitpunkt schon
+            # begonnene (aber noch offene) Chunk am Schleifenende trotzdem
+            # unconditional angehaengt und MAX_MESSAGES um eins ueberschritten.
+            if len(field_chunks) >= MAX_MESSAGES:
+                remaining = len(offers) - i
+                print(f"HINWEIS: {remaining} weitere Angebote werden aus Nachrichten-Limit-Gruenden nicht gesendet.")
+                break
         current_fields.append(field)
         current_chars += field_chars
-    if current_fields:
+    if current_fields and len(field_chunks) < MAX_MESSAGES:
         field_chunks.append(current_fields)
 
     total = len(field_chunks)

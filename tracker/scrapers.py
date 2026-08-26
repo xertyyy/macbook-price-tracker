@@ -16,7 +16,7 @@ from urllib.parse import quote_plus
 import requests
 from bs4 import BeautifulSoup
 
-from tracker.config import HEADERS, REQUEST_TIMEOUT, SITE_DELAY_RANGE, is_broken
+from tracker.config import HEADERS, REQUEST_TIMEOUT, SITE_DELAY_RANGE, contains_keyword, is_broken
 from tracker.ebay_api import search_ebay_offers
 
 
@@ -85,23 +85,24 @@ SOURCES = {
 
 
 def _parse_price(raw):
+    """Findet den (kleinsten) vollstaendigen Preis-Betrag im Text. Sucht
+    gezielt nach Ziffernfolgen mit Tausender-/Dezimaltrennern statt einfach
+    ALLE Ziffern im Text zusammenzukleben — sonst wuerden zwei nebeneinander
+    stehende Preise (z. B. Streichpreis+Aktionspreis: "1.099,00 €899,00 €")
+    zu einer einzigen falschen Zahl verschmelzen. Bei mehreren gefundenen
+    Preisen (Streichpreis-Fall) wird der kleinere genommen — das ist bei
+    Rabatt-Anzeigen praktisch immer der tatsaechliche Angebotspreis."""
     if not raw:
         return None
-    cleaned = re.sub(r"[^\d,.]", "", raw).replace(".", "").replace(",", ".")
-    m = re.search(r"\d+(\.\d+)?", cleaned)
-    try:
-        return float(m.group()) if m else None
-    except ValueError:
-        return None
-
-
-def _contains_keyword(text, keyword):
-    """Wortgrenzen-Suche statt reiner Teilstring-Suche: "8gb" darf NICHT in
-    "18gb" matchen (waere sonst ein Teilstring-Treffer und wuerde faelschlich
-    18GB-Angebote mit ausschliessen, wenn "8gb" auf der exclude_keywords-
-    Liste steht)."""
-    pattern = r"\b" + re.escape(keyword) + r"\b"
-    return re.search(pattern, text) is not None
+    tokens = re.findall(r"\d[\d.,]*\d|\d", raw)
+    prices = []
+    for token in tokens:
+        cleaned = token.replace(".", "").replace(",", ".")
+        try:
+            prices.append(float(cleaned))
+        except ValueError:
+            continue
+    return min(prices) if prices else None
 
 
 def accept(title, price, product):
@@ -116,9 +117,9 @@ def accept(title, price, product):
     if is_broken(title):
         return False
     lowered = title.lower()
-    if product.required_keywords and not all(_contains_keyword(lowered, k) for k in product.required_keywords):
+    if product.required_keywords and not all(contains_keyword(lowered, k) for k in product.required_keywords):
         return False
-    if any(_contains_keyword(lowered, k) for k in product.exclude_keywords):
+    if any(contains_keyword(lowered, k) for k in product.exclude_keywords):
         return False
     return True
 

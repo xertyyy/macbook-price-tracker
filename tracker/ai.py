@@ -85,7 +85,12 @@ def _call_gemini(prompt, schema, api_key):
             data = resp.json()
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             return json.loads(text)
-        except requests.RequestException as exc:
+        except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
+            # KeyError/IndexError: z. B. leere/fehlende "candidates" (Gemini
+            # hat sicherheitsgefiltert). ValueError deckt auch json.JSONDecodeError
+            # ab (Modell liefert kein valides JSON). Ohne diese drei wuerde ein
+            # einzelnes fehlerhaftes Modell den kompletten Aufruf abbrechen,
+            # statt die naechsten Kandidaten in GEMINI_MODEL_CANDIDATES zu probieren.
             last_exc = exc
             continue
 
@@ -265,18 +270,35 @@ def apply_offer_ratings(offers, product_name, api_key):
         rating_by_index = {r["index"]: r for r in ratings if isinstance(r, dict) and "index" in r}
 
         kept = []
+        missing_count = 0
+        rejected_count = 0
+        too_expensive_count = 0
         for i, offer in enumerate(offers):
             rating = rating_by_index.get(i)
-            if not rating or not rating.get("passt_zum_produkt", True):
+            if rating is None:
+                # Gemini hat fuer diesen Index keinen Eintrag geliefert (bei
+                # langen Listen kommt das vor) — das ist NICHT dasselbe wie
+                # eine explizite Ablehnung, daher separat gezaehlt statt
+                # stillschweigend wie ein passt_zum_produkt=false behandelt.
+                missing_count += 1
                 continue
-            if estimate and offer["price"] > estimate * 1.05:
+            if not rating.get("passt_zum_produkt", True):
+                rejected_count += 1
+                continue
+            # "estimate is not None" statt "estimate": eine Schaetzung von
+            # exakt 0.0 ist ein gueltiger (wenn auch seltener) Wert und soll
+            # den Preisdeckel weiterhin anwenden, nicht per Falsy-Check umgehen.
+            if estimate is not None and offer["price"] > estimate * 1.05:
+                too_expensive_count += 1
                 continue
             offer["tier"] = compute_tier_from_percentile(offer["price"], stats)
             offer["tier_note"] = rating.get("begruendung", "")
             kept.append(offer)
 
         print(f"KI-Analyse: {len(kept)}/{len(offers)} Angebote relevant + im Preisrahmen "
-              f"(Markt-Schaetzung: {estimate} EUR).")
+              f"(Markt-Schaetzung: {estimate} EUR). Verworfen: {rejected_count} nicht "
+              f"passend, {too_expensive_count} zu teuer, {missing_count} von der KI "
+              f"nicht bewertet.")
         return kept, market
     except Exception as exc:
         print(f"KI-Analyse fehlgeschlagen, nutze Median-basierte Einstufung: {exc}", file=sys.stderr)

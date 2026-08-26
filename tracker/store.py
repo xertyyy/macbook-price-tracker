@@ -140,6 +140,13 @@ class Store:
         return [_row_to_product(r) for r in rows]
 
     def touch_product(self, product_id, *, run_id, ok):
+        # Read-then-write, nicht atomar: zwei ueberlappende Aufrufe koennten
+        # theoretisch denselben alten fail_streak lesen und ein Inkrement
+        # verlieren. Die eigentliche Absicherung dagegen ist der
+        # `concurrency:`-Block in .github/workflows/price_tracker.yml (der
+        # verhindert ueberlappende Cron-Laeufe ueberhaupt) -- das hier bleibt
+        # bewusst ein einfaches Read-PATCH, da fail_streak nur ein Zaehler
+        # fuer Alarm-Schwellen ist, kein Wert mit Korrektheitsanspruch.
         body = {"last_scraped_at": _now_iso(), "last_run_id": run_id}
         if ok:
             body["fail_streak"] = 0

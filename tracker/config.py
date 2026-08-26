@@ -3,10 +3,19 @@ Generische Konfiguration: Umgebungsvariablen, HTTP-Header, Anti-Bot-Delays,
 Qualitaetsstufen und Discord-Farben. Alles hier ist produkt-unabhaengig.
 """
 import random
+import re
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def contains_keyword(text, keyword):
+    """Wortgrenzen-Suche statt reiner Teilstring-Suche: "fehler" darf NICHT
+    in "fehlerfrei" matchen, "8gb" darf NICHT in "18gb" matchen. Gemeinsam
+    genutzt von is_broken() hier und tracker/scrapers.py's accept()."""
+    pattern = r"\b" + re.escape(keyword) + r"\b"
+    return re.search(pattern, text) is not None
 
 # ---------------------------------------------------------------------------
 # Discord Embed-Farben
@@ -96,7 +105,7 @@ BROKEN_KEYWORDS = [
 def is_broken(title):
     """Prueft, ob ein Angebotstitel auf ein defektes/beschaedigtes Geraet hindeutet."""
     lowered = title.lower()
-    return any(keyword in lowered for keyword in BROKEN_KEYWORDS)
+    return any(contains_keyword(lowered, keyword) for keyword in BROKEN_KEYWORDS)
 
 
 # Mehrere realistische, aktuelle Browser-User-Agents — bei jedem Lauf wird

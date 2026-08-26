@@ -6,6 +6,17 @@ on:
     - cron: '*/30 * * * *'
   workflow_dispatch: {}
 
+# Verhindert ueberlappende Laeufe: GitHub Actions kann geplante Trigger unter
+# Last verzoegert starten, und der Tracker-Lauf selbst kann sich dem
+# 30-Minuten-Fenster annaehern (DEFAULT_BUDGET_SECONDS=1500s). Ohne diesen
+# Block koennten zwei parallele Laeufe dieselben Produkte doppelt scrapen
+# und doppelte Discord-Nachrichten senden. cancel-in-progress: false laesst
+# einen bereits laufenden Job zu Ende laufen, statt ihn abzubrechen -- ein
+# neuer Trigger wartet stattdessen in der Warteschlange.
+concurrency:
+  group: price-tracker
+  cancel-in-progress: false
+
 jobs:
   track-price:
     runs-on: ubuntu-latest

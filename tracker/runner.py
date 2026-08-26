@@ -124,52 +124,65 @@ def run_for_product(product, store, webhook_url, gemini_api_key, *, push_all=Fal
         store.touch_product(product.id, run_id=run_id, ok=True)
         return
 
-    kept, market_info = apply_offer_ratings(offers, product.name, gemini_api_key)
+    # Alles ab hier (KI-Bewertung, Supabase-Schreibzugriffe, Discord-Versand)
+    # laeuft in EINEM try/except: ohne das wuerde z. B. ein transienter
+    # Supabase-Fehler bei upsert_offers() unbehandelt aus run_for_product()
+    # rausfallen und damit die GESAMTE run_all()-Schleife abbrechen -- alle
+    # weiteren faelligen Produkte in diesem Cron-Zyklus wuerden uebersprungen.
+    try:
+        kept, market_info = apply_offer_ratings(offers, product.name, gemini_api_key)
 
-    stats_body = {"offers_found": len(offers), "offers_kept": len(kept)}
-    if market_info and market_info.get("geschaetzter_marktpreis"):
-        stats_body["ai_market_estimate"] = market_info["geschaetzter_marktpreis"]
-        if market_info.get("begruendung"):
-            stats_body["ai_market_note"] = market_info["begruendung"]
+        stats_body = {"offers_found": len(offers), "offers_kept": len(kept)}
+        if market_info and market_info.get("geschaetzter_marktpreis"):
+            stats_body["ai_market_estimate"] = market_info["geschaetzter_marktpreis"]
+            if market_info.get("begruendung"):
+                stats_body["ai_market_note"] = market_info["begruendung"]
 
-    if not kept:
-        print("Keine Angebote nach KI-Bewertung/Preisfilter uebrig.")
-        store.finish_run(run_id, status="ok", offers_new=0, **stats_body)
+        if not kept:
+            print("Keine Angebote nach KI-Bewertung/Preisfilter uebrig.")
+            store.finish_run(run_id, status="ok", offers_new=0, **stats_body)
+            store.touch_product(product.id, run_id=run_id, ok=True)
+            return
+
+        kept.sort(key=lambda o: (TIER_RANK.get(o["tier"], 99), o["price"]))
+
+        rows = store.upsert_offers(product.id, run_id, kept)
+        store.record_price_points(product.id, run_id, kept)
+
+        rows_by_link = {r["link"]: r for r in rows}
+        if push_all:
+            to_send = kept
+        else:
+            to_send = [o for o in kept if _is_new_offer(rows_by_link.get(o["link"], {}), run_started)]
+
+        store.finish_run(run_id, status="ok", offers_new=len(to_send), **stats_body)
         store.touch_product(product.id, run_id=run_id, ok=True)
-        return
 
-    kept.sort(key=lambda o: (TIER_RANK.get(o["tier"], 99), o["price"]))
+        if not to_send:
+            print(f"{len(kept)} passende Angebote, aber 0 davon neu — keine Discord-Nachricht.")
+            return
 
-    rows = store.upsert_offers(product.id, run_id, kept)
-    store.record_price_points(product.id, run_id, kept)
+        shown = to_send[:MAX_OFFERS_TO_SHOW]
+        if len(to_send) > MAX_OFFERS_TO_SHOW:
+            print(f"HINWEIS: {len(to_send) - MAX_OFFERS_TO_SHOW} weitere neue Angebote werden wegen MAX_OFFERS_TO_SHOW nicht gesendet.")
 
-    rows_by_link = {r["link"]: r for r in rows}
-    if push_all:
-        to_send = kept
-    else:
-        to_send = [o for o in kept if _is_new_offer(rows_by_link.get(o["link"], {}), run_started)]
+        print(f"{len(shown)} von {len(to_send)} neuen Angeboten werden an Discord gesendet.")
+        for offer in shown:
+            print(f" - [{offer['tier']}] {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
 
-    store.finish_run(run_id, status="ok", offers_new=len(to_send), **stats_body)
-    store.touch_product(product.id, run_id=run_id, ok=True)
-
-    if not to_send:
-        print(f"{len(kept)} passende Angebote, aber 0 davon neu — keine Discord-Nachricht.")
-        return
-
-    shown = to_send[:MAX_OFFERS_TO_SHOW]
-    if len(to_send) > MAX_OFFERS_TO_SHOW:
-        print(f"HINWEIS: {len(to_send) - MAX_OFFERS_TO_SHOW} weitere neue Angebote werden wegen MAX_OFFERS_TO_SHOW nicht gesendet.")
-
-    print(f"{len(shown)} von {len(to_send)} neuen Angeboten werden an Discord gesendet.")
-    for offer in shown:
-        print(f" - [{offer['tier']}] {offer['title']} — {offer['price']:.2f} € ({offer['source']})")
-
-    payloads, _ = build_offer_messages(product.name, shown, market_info, source_counts=count_by_source(kept))
-    print(f"Sende {len(payloads)} Discord-Nachricht(en) fuer {len(shown)} Angebote.")
-    for idx, payload in enumerate(payloads):
-        send_discord_message(payload, webhook_url)
-        if idx < len(payloads) - 1:
-            time.sleep(1.5)
+        payloads, _ = build_offer_messages(product.name, shown, market_info, source_counts=count_by_source(kept))
+        print(f"Sende {len(payloads)} Discord-Nachricht(en) fuer {len(shown)} Angebote.")
+        for idx, payload in enumerate(payloads):
+            send_discord_message(payload, webhook_url)
+            if idx < len(payloads) - 1:
+                time.sleep(1.5)
+    except Exception as exc:
+        print(f"Verarbeitung nach dem Scraping fehlgeschlagen: {exc}", file=sys.stderr)
+        try:
+            store.finish_run(run_id, status="error", error=str(exc))
+        except Exception:
+            pass
+        store.touch_product(product.id, run_id=run_id, ok=False)
 
 
 def run_all(webhook_url, gemini_api_key, *, budget_seconds=DEFAULT_BUDGET_SECONDS, limit=DEFAULT_PRODUCT_LIMIT):
